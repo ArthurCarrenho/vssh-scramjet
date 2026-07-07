@@ -526,25 +526,6 @@ jobs:
           name: frontend
           path: ./packages/demo/dist
 
-  pages:
-    name: Upload to Github Pages
-    runs-on: ubuntu-latest
-    needs: [frontend, tests, rewritertests]
-    permissions: write-all
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Get artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend
-          path: .
-
-      - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-
-      - name: Deploy to github
-        id: deployment
-        uses: actions/deploy-pages@v4
+  # vssh fork: GitHub Pages deploy removed — we don't host the demo site, and it failed the run
+  # because Pages isn't enabled on the fork. The `frontend` job above still builds the demo (it
+  # passes); only the Pages upload/deploy is dropped.
