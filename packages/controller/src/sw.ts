@@ -8,6 +8,100 @@ function makeId(): string {
 	return Math.random().toString(36).substring(2, 10);
 }
 
+// vssh fork: friendly HTML error page rendered when route() throws (network/libcurl
+// failure, or an internal error like "No frame found for request"). Upstream returned
+// plain text ("Internal Service Worker Error: ...", status 500) with no way to customize
+// it. Self-contained HTML (inline CSS — the SW has no access to the page's DOM/CSSOM),
+// theme-aware, with libcurl error codes mapped to human-readable Portuguese messages.
+function renderErrorPage(error: Error): string {
+	const message = error?.message || "Erro desconhecido";
+	const codeMatch = /error code (\d+)/i.exec(message);
+	const code = codeMatch ? parseInt(codeMatch[1], 10) : null;
+
+	// libcurl error codes (CURLE_*) that surface most often through the wisp transport.
+	const messages: Record<number, { title: string; detail: string }> = {
+		6: {
+			title: "Não foi possível resolver o endereço",
+			detail: "O nome do servidor não pôde ser encontrado (DNS). Verifique se o endereço está correto.",
+		},
+		7: {
+			title: "Não foi possível conectar ao servidor",
+			detail: "A conexão foi recusada. O servidor pode estar fora do ar ou a porta pode estar errada.",
+		},
+		28: {
+			title: "Tempo esgotado",
+			detail: "O servidor demorou demais para responder.",
+		},
+		52: {
+			title: "O servidor não respondeu nada",
+			detail: "A conexão foi aberta mas fechada sem resposta. O serviço pode ter caído no meio da requisição.",
+		},
+		56: {
+			title: "Falha ao receber dados",
+			detail: "A conexão foi interrompida durante o recebimento da resposta.",
+		},
+		60: {
+			title: "Certificado de segurança inválido",
+			detail: "O certificado TLS deste site não pôde ser validado (por exemplo, um certificado autoassinado). É possível permitir certificados inválidos nas configurações do navegador, se você confia neste destino.",
+		},
+	};
+
+	const friendly = code !== null ? messages[code] : undefined;
+	const title = friendly?.title ?? "Não foi possível carregar a página";
+	const detail =
+		friendly?.detail ??
+		"Ocorreu um erro ao processar a requisição através do motor de navegação.";
+
+	const esc = (s: string) =>
+		s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+	return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f7; color: #1d1d1f; padding: 24px;
+  }
+  .card {
+    max-width: 480px; width: 100%; text-align: center;
+    background: #fff; border-radius: 16px; padding: 40px 32px;
+    box-shadow: 0 2px 24px rgba(0,0,0,.08);
+  }
+  .icon { font-size: 48px; line-height: 1; margin-bottom: 16px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 12px; }
+  p { font-size: 15px; line-height: 1.5; margin: 0 0 8px; color: #515154; }
+  .code {
+    margin-top: 20px; font-size: 12px; color: #86868b;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    word-break: break-word;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1d1d1f; color: #f5f5f7; }
+    .card { background: #2c2c2e; box-shadow: 0 2px 24px rgba(0,0,0,.4); }
+    p { color: #a1a1a6; }
+    .code { color: #6e6e73; }
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">⚠️</div>
+    <h1>${esc(title)}</h1>
+    <p>${esc(detail)}</p>
+    <div class="code">${esc(message)}</div>
+  </div>
+</body>
+</html>`;
+}
+
 const cookieResolvers: Record<string, (value: void) => void> = {};
 addEventListener("message", (e) => {
 	if (!e.data) return;
@@ -201,12 +295,10 @@ export async function route(event: FetchEvent): Promise<Response> {
 		});
 	} catch (e) {
 		console.error("Service Worker error:", e);
-		return new Response(
-			"Internal Service Worker Error: " + (e as Error).message,
-			{
-				status: 500,
-			}
-		);
+		return new Response(renderErrorPage(e as Error), {
+			status: 500,
+			headers: { "Content-Type": "text/html; charset=utf-8" },
+		});
 	}
 }
 
