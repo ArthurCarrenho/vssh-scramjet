@@ -73,6 +73,18 @@ const scramjetConfig: Partial<ScramjetConfig> = {
 	maskedfiles: ["inject.js", "scramjet.wasm.js"],
 };
 
+// vssh fork: distingue FALHA DE TRANSPORTE/REDE (libcurl/wisp: URL morta, host bloqueado, arquivo
+// parcial, DNS, timeout, conexão recusada/resetada, stream abortado) de um BUG INTERNO do motor.
+// Falha de rede é o comportamento normal da web (o remoto falhou, não o motor) e não deve gerar
+// console.error — um navegador de verdade não loga erro de framework nesses casos. Espelha o helper
+// homônimo em sw.ts (duplicado de propósito: contextos/bundles distintos, page vs service worker).
+function isTransportNetworkError(e: unknown): boolean {
+	const msg = e instanceof Error ? e.message : String(e ?? "");
+	return /error code \d+|Transferred a partial|Failed to fetch|NetworkError|connection|timed?\s?out|refused|reset|closed|abort|ECONN|ENOTFOUND|EOF|stream/i.test(
+		msg
+	);
+}
+
 type PersistedCookieState = {
 	updatedAt: number;
 	cookies: string;
@@ -345,7 +357,11 @@ export class Controller {
 					suppressError: false,
 				};
 				await Tap.dispatch(frame.hooks.error.request, reqcontext, reqprops);
-				if (!reqprops.suppressError) {
+				// Falha de transporte/rede (remoto caiu, arquivo parcial, DNS, timeout, host
+				// bloqueado por extensão) é o comportamento normal da web, não um bug do motor —
+				// não loga. O erro ainda é re-lançado abaixo; o SW o traduz num erro de rede real
+				// (Response.error()) pra subrecursos. Só erros INESPERADOS (bug interno) são logados.
+				if (!reqprops.suppressError && !isTransportNetworkError(e)) {
 					console.error("Error in controller request handler:", e);
 				}
 				if (reqprops.setResponse) {

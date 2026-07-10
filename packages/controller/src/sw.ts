@@ -102,6 +102,17 @@ function renderErrorPage(error: Error): string {
 </html>`;
 }
 
+// vssh fork: distingue FALHA DE TRANSPORTE/REDE (libcurl/wisp: URL morta, host bloqueado, arquivo
+// parcial, DNS, timeout, conexão recusada/resetada, stream abortado) de um BUG INTERNO do motor.
+// Falha de rede é o comportamento normal da web — não deve poluir o console nem virar página de
+// erro 500 num subrecurso. Só bug inesperado merece log.
+function isTransportNetworkError(e: unknown): boolean {
+	const msg = e instanceof Error ? e.message : String(e ?? "");
+	return /error code \d+|Transferred a partial|Failed to fetch|NetworkError|connection|timed?\s?out|refused|reset|closed|abort|ECONN|ENOTFOUND|EOF|stream/i.test(
+		msg
+	);
+}
+
 const cookieResolvers: Record<string, (value: void) => void> = {};
 addEventListener("message", (e) => {
 	if (!e.data) return;
@@ -294,7 +305,16 @@ export async function route(event: FetchEvent): Promise<Response> {
 			headers: response.headers,
 		});
 	} catch (e) {
-		console.error("Service Worker error:", e);
+		// Subrecurso (script/img/xhr/fetch — tudo que NÃO é navegação principal): traduz a falha
+		// num erro de rede REAL, como um navegador de verdade. O fetch() da página rejeita e
+		// <img>/<script> disparam onerror, em vez de receber uma página HTML 500 como "conteúdo".
+		// Sem console.error, sem 500: URL morta/host bloqueado é normal e não deve poluir nada.
+		if (event.request.mode !== "navigate") {
+			return Response.error();
+		}
+		// Navegação principal: mantém a página de erro legível (renderErrorPage) pra o usuário ver
+		// que o site falhou. Loga só se for um erro INESPERADO (bug do motor), não falha de rede.
+		if (!isTransportNetworkError(e)) console.error("Service Worker error:", e);
 		return new Response(renderErrorPage(e as Error), {
 			status: 500,
 			headers: { "Content-Type": "text/html; charset=utf-8" },
