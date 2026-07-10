@@ -371,6 +371,12 @@ jobs:
           name: scramjet-controller-package
           path: .
 
+      - name: Get artifacts (scramjet/utils)
+        uses: actions/download-artifact@v4
+        with:
+          name: scramjet-utils-package
+          path: .
+
       - name: Release unstable build to GitHub
         uses: ncipollo/release-action@v1
         with:
