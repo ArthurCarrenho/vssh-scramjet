@@ -593,40 +593,120 @@ export default function (client: ScramjetClient, self: typeof window) {
 		},
 	});
 
-	// TODO: this needs to be done for all insert methods
-	// client.Proxy(["Element.prototype.appendChild", "Element.prototype.append"], {
-	// 	apply(ctx) {
-	// 		if (ctx.this instanceof self.HTMLStyleElement) {
-	// 			for (const node of ctx.args) {
-	// 				if (node instanceof self.Text) {
-	// 					node.data = rewriteCss(
-	// 						ctx.args[0].data,
-	// 						client.context,
-	// 						client.meta
-	// 					);
-	// 				}
-	// 			}
-	// 		} else if (ctx.this instanceof self.HTMLScriptElement) {
-	// 			for (const node of ctx.args) {
-	// 				if (node instanceof self.Text) {
-	// 					const newval: string = rewriteJs(
-	// 						node.data,
-	// 						"(anonymous script element)",
-	// 						client.context,
-	// 						client.meta
-	// 					) as string;
-	// 					client.natives.call(
-	// 						"Element.prototype.setAttribute",
-	// 						ctx.this,
-	// 						"scramjet-attr-script-source-src",
-	// 						bytesToBase64(encoder.encode(newval))
-	// 					);
-	// 					node.data = newval;
-	// 				}
-	// 			}
-	// 		}
-	// 	},
-	// });
+	// Text nodes inserted into <style>/<script> (e.g.
+	// style.appendChild(document.createTextNode(css)) — the pattern used by
+	// webfont loaders and jQuery) previously escaped rewriting entirely, so
+	// url()/@font-face went straight to the origin and failed on CORS.
+	const rewriteInsertedNodes = (parent: Node, args: any[], limit: number) => {
+		if (
+			!client.box.instanceof(parent, "HTMLStyleElement") &&
+			!client.box.instanceof(parent, "HTMLScriptElement")
+		)
+			return;
+
+		const rewriteTextNode = (node: Text) => {
+			if (!node.data) return;
+			// a node already living in a style/script has rewritten data; moving
+			// it must not rewrite a second time
+			const currentParent = client.natives.call(
+				"Node.prototype.parentElement",
+				node
+			);
+			if (
+				client.box.instanceof(currentParent, "HTMLStyleElement") ||
+				client.box.instanceof(currentParent, "HTMLScriptElement")
+			)
+				return;
+			node.data = rewriteTextForElement(parent as Element, String(node.data));
+		};
+
+		for (let i = 0; i < limit && i < args.length; i++) {
+			const node = args[i];
+			if (typeof node === "string") {
+				args[i] = rewriteTextForElement(parent as Element, node);
+			} else if (client.box.instanceof(node, "Text")) {
+				rewriteTextNode(node);
+			} else if (client.box.instanceof(node, "DocumentFragment")) {
+				const children = node.childNodes;
+				for (let j = 0; j < children.length; j++) {
+					const child = children[j];
+					if (client.box.instanceof(child, "Text")) rewriteTextNode(child);
+				}
+			}
+		}
+	};
+
+	client.Proxy(
+		[
+			"Node.prototype.appendChild",
+			"Node.prototype.insertBefore",
+			"Node.prototype.replaceChild",
+		],
+		{
+			apply(ctx) {
+				// only the first argument is the inserted node
+				rewriteInsertedNodes(ctx.this, ctx.args, 1);
+			},
+		}
+	);
+
+	client.Proxy(
+		[
+			"Element.prototype.append",
+			"Element.prototype.prepend",
+			"Element.prototype.replaceChildren",
+		],
+		{
+			apply(ctx) {
+				rewriteInsertedNodes(ctx.this, ctx.args, ctx.args.length);
+			},
+		}
+	);
+
+	client.Proxy("Element.prototype.insertAdjacentText", {
+		apply(ctx) {
+			const where = String(ctx.args[0]).toLowerCase();
+			// only afterbegin/beforeend insert into ctx.this itself
+			if (where !== "afterbegin" && where !== "beforeend") return;
+			if (
+				client.box.instanceof(ctx.this, "HTMLStyleElement") ||
+				client.box.instanceof(ctx.this, "HTMLScriptElement")
+			) {
+				ctx.args[1] = rewriteTextForElement(ctx.this, String(ctx.args[1]));
+			}
+		},
+	});
+
+	client.Trap(["CharacterData.prototype.data", "Node.prototype.nodeValue"], {
+		set(ctx, value) {
+			if (!client.box.instanceof(ctx.this, "Text")) return ctx.set(value);
+			const parent = client.natives.call(
+				"Node.prototype.parentElement",
+				ctx.this
+			);
+			return ctx.set(rewriteTextForElement(parent, String(value)));
+		},
+		get(ctx) {
+			const value = ctx.get();
+			if (typeof value !== "string" || !value) return value;
+			if (!client.box.instanceof(ctx.this, "Text")) return value;
+			const parent = client.natives.call(
+				"Node.prototype.parentElement",
+				ctx.this
+			);
+			return getTextForElement(parent, value);
+		},
+	});
+
+	// jQuery's DOMEval injects code via script.text
+	client.Trap("HTMLScriptElement.prototype.text", {
+		set(ctx, value) {
+			ctx.set(rewriteTextForElement(ctx.this, String(value)));
+		},
+		get(ctx) {
+			return getTextForElement(ctx.this, ctx.get());
+		},
+	});
 
 	client.Proxy("Audio", {
 		construct(ctx) {

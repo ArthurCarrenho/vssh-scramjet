@@ -476,18 +476,47 @@ export function rewriteSrcset(
 	context: ScramjetContext,
 	meta: URLMeta
 ) {
-	const sources = srcset.split(/ .*,/).map((src) => src.trim());
-	const rewrittenSources = sources.map((source) => {
-		// Split into URLs and descriptors (if any)
-		// e.g. url0, url1 1.5x, url2 2x
-		const [url, ...descriptors] = source.split(/\s+/);
+	// vssh fork: o split original `/ .*,/` usava `.*` GANANCIOSO — casava do 1º espaço até a ÚLTIMA
+	// vírgula do srcset inteiro, engolindo todas as imagens do meio e sobrando só a 1ª URL + uma
+	// entrada vazia (rewriteUrl resolvia como a própria página → <img> quebrado). Split simples por
+	// vírgula tampouco serve: quebra data: URLs (`data:...;base64,AAAA 1x`) que contêm vírgula.
+	// Seguimos o algoritmo de parsing de srcset da WHATWG: candidatos separados por vírgula, mas a
+	// URL é uma sequência de não-espaços (a vírgula interna do data: fica dentro dela), com a forma
+	// sem-espaço `urlA,urlB` tratada por vírgulas à direita da URL.
+	const isWs = (c: string) =>
+		c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+	const candidates: { url: string; descriptor: string }[] = [];
+	let pos = 0;
+	const len = srcset.length;
+	while (pos < len) {
+		while (pos < len && (isWs(srcset[pos]) || srcset[pos] === ",")) pos++;
+		if (pos >= len) break;
+		const urlStart = pos;
+		while (pos < len && !isWs(srcset[pos])) pos++;
+		let url = srcset.slice(urlStart, pos);
+		let descriptor = "";
+		if (url.endsWith(",")) {
+			// forma `urlA,urlB` sem espaço: as vírgulas à direita são separadores
+			url = url.replace(/,+$/, "");
+		} else {
+			while (pos < len && isWs(srcset[pos])) pos++;
+			const descStart = pos;
+			let parenDepth = 0;
+			while (pos < len) {
+				const c = srcset[pos];
+				if (parenDepth === 0 && c === ",") break;
+				if (c === "(") parenDepth++;
+				else if (c === ")" && parenDepth > 0) parenDepth--;
+				pos++;
+			}
+			descriptor = srcset.slice(descStart, pos).trim();
+		}
+		if (url) candidates.push({ url, descriptor });
+	}
 
-		// Rewrite the URLs and keep the descriptors (if any)
-		const rewrittenUrl = rewriteUrl(url.trim(), context, meta);
-
-		return descriptors.length > 0
-			? `${rewrittenUrl} ${descriptors.join(" ")}`
-			: rewrittenUrl;
+	const rewrittenSources = candidates.map(({ url, descriptor }) => {
+		const rewrittenUrl = rewriteUrl(url, context, meta);
+		return descriptor ? `${rewrittenUrl} ${descriptor}` : rewrittenUrl;
 	});
 
 	return rewrittenSources.join(", ");
