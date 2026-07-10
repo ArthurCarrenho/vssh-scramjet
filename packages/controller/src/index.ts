@@ -233,7 +233,14 @@ export class Controller {
 	cookieJar = new CookieJar();
 	frames: Frame[] = [];
 	serviceWorkerController: ServiceWorker;
-	guardServiceWorkerRevive = true;
+	// vssh fork: `true` só ATÉ o handshake inicial terminar (1º `ready` recebido). Antes disso um
+	// `$controller$swrevive` (que o SW dispara ~100ms após ativar, mesmo sem ter morrido) NÃO deve
+	// trocar a MessagePort — trocá-la no meio do handshake perderia o `ready` em voo e travaria
+	// wait(). Depois do handshake, re-registrar a cada revive é seguro e auto-curativo (o SW
+	// deduplica tab por id, e cada setupMessagePort dispara um novo `ready`). Substituiu o antigo
+	// `guardServiceWorkerRevive` de timer fixo de 5s, que, se o SW reiniciasse dentro desses 5s,
+	// ignorava o revive pra sempre → `tabs` do SW ficava vazio → só F5 do cliente recuperava.
+	handshakeComplete = false;
 
 	private ready: Promise<void>;
 	private readyResolve!: () => void;
@@ -278,9 +285,9 @@ export class Controller {
 	private methods: MethodsDefinition<Controllerbound> = {
 		ready: async () => {
 			this.readyResolve();
-			setTimeout(() => {
-				this.guardServiceWorkerRevive = false;
-			}, 5000);
+			// Handshake inicial concluído — a partir daqui um revive genuíno (SW reiniciado) pode e
+			// deve re-registrar a porta. Ver `handshakeComplete` e o handler de $controller$swrevive.
+			this.handshakeComplete = true;
 		},
 		request: async (data) => {
 			const path = new URL(data.rawUrl).pathname;
@@ -530,9 +537,11 @@ export class Controller {
 			}
 
 			if (e.data.$controller$swrevive) {
-				// if we just spawned the service worker, it will send this even though it's not actually dead
-				// TODO: pretty jank, fix at some point
-				if (this.guardServiceWorkerRevive) {
+				// O SW dispara $controller$swrevive ~100ms após ativar (mesmo sem ter morrido) e a cada
+				// vez que o script dele recarrega. Antes do handshake inicial terminar, ignoramos (trocar
+				// a porta no meio do handshake perderia o `ready` em voo). Depois, re-registramos: é o
+				// que reconquista o roteamento quando o SW reiniciou de fato e perdeu o array `tabs`.
+				if (!this.handshakeComplete) {
 					return;
 				}
 				this.setupMessagePort();

@@ -108,6 +108,7 @@
 		"wpt-referrer-policy-generic-inheritance-iframe-inheritance-about-blank-html",
 		"wpt-referrer-policy-generic-inheritance-iframe-inheritance-srcdoc-html",
 		"cookies-twitter",
+		"cookies-fetch-set-cookie-race",
 		"websocketstream-sanity",
 		"rewriter-css-unrewrite-import-string",
 		"rewriter-css-unrewrite-import-url",
