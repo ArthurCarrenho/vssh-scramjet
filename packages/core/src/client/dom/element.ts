@@ -521,15 +521,24 @@ export default function (client: ScramjetClient, self: typeof window) {
 		return text;
 	};
 
+	// textContent/nodeValue live on Node, so they also fire for a Text node that is a *child* of a
+	// <script>/<style> (e.g. `styleChild.textContent = css`). Rewriting must key off that child's
+	// PARENT element, not the text node itself — otherwise injected JS/CSS escapes unrewritten.
+	const textTargetOf = (node: any) => {
+		if (client.box.instanceof(node, "Text"))
+			return client.descriptors.get("Node.prototype.parentElement", node);
+		return node;
+	};
+
 	client.Trap(
 		["Node.prototype.textContent", "HTMLScriptElement.prototype.textContent"],
 		{
 			set(ctx, value) {
 				const text = String(value);
-				return ctx.set(rewriteTextForElement(ctx.this, text));
+				return ctx.set(rewriteTextForElement(textTargetOf(ctx.this), text));
 			},
 			get(ctx) {
-				return getTextForElement(ctx.this, ctx.get());
+				return getTextForElement(textTargetOf(ctx.this), ctx.get());
 			},
 		}
 	);
@@ -608,7 +617,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 			if (!node.data) return;
 			// a node already living in a style/script has rewritten data; moving
 			// it must not rewrite a second time
-			const currentParent = client.natives.call(
+			const currentParent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				node
 			);
@@ -680,7 +689,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 	client.Trap(["CharacterData.prototype.data", "Node.prototype.nodeValue"], {
 		set(ctx, value) {
 			if (!client.box.instanceof(ctx.this, "Text")) return ctx.set(value);
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -690,7 +699,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 			const value = ctx.get();
 			if (typeof value !== "string" || !value) return value;
 			if (!client.box.instanceof(ctx.this, "Text")) return value;
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -716,7 +725,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 	client.Proxy("Text.prototype.appendData", {
 		apply(ctx) {
 			const text = String(ctx.args[0]);
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -727,7 +736,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 	client.Proxy("Text.prototype.insertData", {
 		apply(ctx) {
 			const text = String(ctx.args[1]);
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -738,7 +747,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 	client.Proxy("Text.prototype.replaceData", {
 		apply(ctx) {
 			const text = String(ctx.args[2]);
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -748,7 +757,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 
 	client.Trap("Text.prototype.wholeText", {
 		get(ctx) {
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);
@@ -756,7 +765,7 @@ export default function (client: ScramjetClient, self: typeof window) {
 		},
 		set(ctx, v) {
 			const text = String(v);
-			const parent = client.natives.call(
+			const parent = client.descriptors.get(
 				"Node.prototype.parentElement",
 				ctx.this
 			);

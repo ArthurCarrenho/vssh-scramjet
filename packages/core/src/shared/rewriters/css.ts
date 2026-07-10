@@ -20,48 +20,127 @@ function handleCss(
 	context: ScramjetContext,
 	meta?: URLMeta
 ) {
-	// regex from vk6 (https://github.com/ading2210)
-	const urlRegex =
-		/(?i:url)\((?:\s*"((?:\\.|[^"])+)"\s*|\s*'((?:\\.|[^'])+)'\s*|((?!\s*['"])(?!\s*\))(?:\\.|[^)])+?))\)/gm;
-	const Atruleregex =
-		/@import\s+((?i:url)\s*?\(.{0,9999}?\)|['"].{0,9999}?['"]|.{0,9999}?)($|\s|;)/gm;
+	// vssh fork: substitui o regex compartilhado (vk6/ading2210) por um tokenizer com estado. O
+	// regex casava `url(`/`@import` DENTRO de comentários `/* */` e de strings de seletor (ex.:
+	// `[style*="url(..."]`), reescrevendo URLs fantasma e às vezes capturando através de tokens.
+	// O tokenizer varre respeitando fronteiras: só reescreve url()/@import em posição real de valor.
 	css = String(css);
-	css = css.replace(
-		urlRegex,
-		(
-			match,
-			doubleQuotedUrl: string | undefined,
-			singleQuotedUrl: string | undefined,
-			unquotedUrl: string | undefined
-		) => {
-			const url = doubleQuotedUrl ?? singleQuotedUrl ?? unquotedUrl;
-			const encodedUrl =
-				type === "rewrite"
-					? rewriteUrl(url.trim(), context, meta!)
-					: unrewriteUrl(url.trim(), context);
+	const n = css.length;
+	const encode = (u: string) =>
+		type === "rewrite"
+			? rewriteUrl(u.trim(), context, meta!)
+			: unrewriteUrl(u.trim(), context);
 
-			return match.replace(url, encodedUrl);
-		}
-	);
-	css = css.replace(Atruleregex, (match, importStatement: string) => {
-		return match.replace(
-			importStatement,
-			importStatement.replace(
-				/^(url\(['"]?|['"]|)(.+?)(['"]|['"]?\)|)$/gm,
-				(match: string, firstQuote: string, url: string, endQuote: string) => {
-					if (firstQuote.startsWith("url")) {
-						return match;
-					}
-					const encodedUrl =
-						type === "rewrite"
-							? rewriteUrl(url.trim(), context, meta!)
-							: unrewriteUrl(url.trim(), context);
-
-					return `${firstQuote}${encodedUrl}${endQuote}`;
-				}
-			)
+	const isWs = (c: string) =>
+		c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+	const isIdent = (c: string) => {
+		if (!c) return false;
+		const code = c.charCodeAt(0);
+		return (
+			(code >= 48 && code <= 57) ||
+			(code >= 65 && code <= 90) ||
+			(code >= 97 && code <= 122) ||
+			code === 45 ||
+			code === 95
 		);
-	});
+	};
 
-	return css;
+	let out = "";
+	let i = 0;
+
+	// css[start] é a aspa de abertura; devolve índice APÓS a aspa de fechamento (respeita \")
+	const scanString = (start: number) => {
+		const q = css[start];
+		let j = start + 1;
+		while (j < n) {
+			const c = css[j];
+			if (c === "\\") {
+				j += 2;
+				continue;
+			}
+			if (c === q) return j + 1;
+			j++;
+		}
+		return n;
+	};
+
+	// processa url(...) a partir de i (case-insensitive). Retorna true se consumiu.
+	const tryUrl = () => {
+		if (i + 4 > n) return false;
+		if (css.slice(i, i + 3).toLowerCase() !== "url" || css[i + 3] !== "(")
+			return false;
+		// fronteira: char anterior não pode ser ident (evita casar `myurl(`)
+		if (isIdent(css[i - 1])) return false;
+
+		const prefix = css.slice(i, i + 4); // preserva a caixa: url( / URL( / uRl(
+		let j = i + 4;
+		while (j < n && isWs(css[j])) j++;
+
+		if (css[j] === '"' || css[j] === "'") {
+			const q = css[j];
+			const end = scanString(j);
+			const inner = css.slice(j + 1, end - 1);
+			let k = end;
+			while (k < n && isWs(css[k])) k++;
+			if (css[k] !== ")") return false; // url() malformado: deixa o scan normal seguir
+			out += inner === "" ? css.slice(i, k + 1) : prefix + q + encode(inner) + q + ")";
+			i = k + 1;
+			return true;
+		}
+
+		// unquoted: lê até ')'
+		let k = j;
+		while (k < n && css[k] !== ")") {
+			if (css[k] === "\\") {
+				k += 2;
+				continue;
+			}
+			k++;
+		}
+		if (k >= n) return false; // sem ')' de fechamento
+		const inner = css.slice(j, k).trim();
+		out += inner === "" ? css.slice(i, k + 1) : prefix + encode(inner) + ")";
+		i = k + 1;
+		return true;
+	};
+
+	// processa @import "..." a partir de i (a forma url() cai no tryUrl). Retorna true se consumiu.
+	const tryImport = () => {
+		if (css.slice(i, i + 7).toLowerCase() !== "@import") return false;
+		if (isIdent(css[i + 7])) return false;
+		let j = i + 7;
+		if (j < n && !isWs(css[j])) return false;
+		while (j < n && isWs(css[j])) j++;
+		if (css[j] !== '"' && css[j] !== "'") return false;
+		const q = css[j];
+		const end = scanString(j);
+		const inner = css.slice(j + 1, end - 1);
+		out += css.slice(i, j) + q + encode(inner) + q;
+		i = end;
+		return true;
+	};
+
+	while (i < n) {
+		const c = css[i];
+		if (c === "/" && css[i + 1] === "*") {
+			const close = css.indexOf("*/", i + 2);
+			const end = close === -1 ? n : close + 2;
+			out += css.slice(i, end);
+			i = end;
+			continue;
+		}
+		// string standalone (seletor, content, …): copia verbatim, nunca reescreve
+		if (c === '"' || c === "'") {
+			const end = scanString(i);
+			out += css.slice(i, end);
+			i = end;
+			continue;
+		}
+		if (c === "@" && tryImport()) continue;
+		if ((c === "u" || c === "U") && tryUrl()) continue;
+		out += c;
+		i++;
+	}
+
+	return out;
 }
