@@ -349,6 +349,13 @@ jobs:
           artifacts: "mercuryworkshop-scramjet-*.tgz,mercuryworkshop-scramjet-controller-*.tgz"
           prerelease: true
 
+      # vssh fork: allowUpdates nos releases com tag. O version-check compara a versão do pacote com
+      # a do NPM PÚBLICO — e o fork nunca publica lá (ver o job de publish removido acima). Então,
+      # para todo pacote em que divergimos do upstream, *_version_changed é `true` em TODO push, pra
+      # sempre, e estes passos tentam recriar a mesma tag a cada build. Sem allowUpdates o segundo
+      # push falha com "release já existe" — e o mais traiçoeiro é que ele falha DEPOIS do "Release
+      # unstable build" acima, que é o único que os consumidores usam: o artefato certo já estava
+      # publicado, mas o build ficava vermelho.
       - name: Release tagged version to GitHub (scramjet/core)
         if: needs.version-check.outputs.scramjet_version_changed == 'true'
         uses: ncipollo/release-action@v1
@@ -358,6 +365,7 @@ jobs:
           commit: main
           body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
           artifacts: "mercuryworkshop-scramjet-*.tgz"
+          allowUpdates: true
 
       - name: Release tagged version to GitHub (scramjet/controller)
         if: needs.version-check.outputs.controller_version_changed == 'true'
@@ -369,6 +377,7 @@ jobs:
           body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
           artifacts: "mercuryworkshop-scramjet-controller-*.tgz"
           makeLatest: false
+          allowUpdates: true
 
   # vssh fork: NPM publish job removed. It published @mercuryworkshop/* to the public npm
   # registry — the fork has no rights to those package names, and must never take them. Every
