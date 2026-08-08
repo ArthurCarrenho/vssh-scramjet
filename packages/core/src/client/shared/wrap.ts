@@ -190,4 +190,44 @@ export default function (client: ScramjetClient, self: GlobalThis) {
 		writable: false,
 		configurable: false,
 	});
+
+	// `$scramjet$temploc` — declared here because nothing else ever declares it.
+	//
+	// When `location` appears in a destructuring TARGET, the rewriter renames it to the temp id and
+	// assigns the real `location` back afterwards, through the `trysetfn` right above:
+	//
+	//   ({ location } = o)
+	//     → ((t)=>($scramjet$tryset(location,"=",$scramjet$temploc)||(location=$scramjet$temploc),t))(
+	//         ({ $sj_location: $scramjet$temploc } = o))
+	//
+	// In a DECLARATION (`var location = …`, `var { location } = …`) the temp id lands inside the
+	// declarator, so `var` declares it. In an ASSIGNMENT target — `({location}=x)`, `[location]=a`,
+	// `({...location}=x)`, `for (location of …)` — nothing declares it: not the rewriter, which
+	// emits a bare `Ty::TempVar => LL::replace(templocid)` and has no program-level hoist, and
+	// until now not this file either.
+	//
+	// Sloppy mode forgives that — the assignment creates an implicit global and the code runs, which
+	// is why it went unnoticed for so long. Strict mode does not: assigning to an unresolvable
+	// reference is a ReferenceError, and EVERY ES module is strict. So any ESM bundle that does
+	// `({ location } = …)` dies with
+	//
+	//   Uncaught ReferenceError: $scramjet$temploc is not defined
+	//
+	// which is what dash.cloudflare.com does, crashing into its React Router error boundary.
+	//
+	// A property on the global object makes the reference resolvable, so the strict-mode assignment
+	// becomes legal again: this gives strict code exactly the semantics sloppy code always had —
+	// no better, no worse. `writable` is required, since the rewritten code assigns to it. The
+	// single shared slot is the same trade the implicit global already made: the cleanup runs
+	// synchronously within the same statement, so re-entrancy inside one tick is the only hazard,
+	// and it predates this line.
+	//
+	// The structural fix belongs in the rewriter — hoist `var $scramjet$temploc;` into the enclosing
+	// function/program whenever a TempVar is emitted in assignment-target position. This is the
+	// cheap half, and it is enough to stop the crash.
+	Object_defineProperty(self, client.config.globals.templocid, {
+		value: undefined,
+		writable: true,
+		configurable: false,
+	});
 }

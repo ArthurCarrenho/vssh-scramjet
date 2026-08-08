@@ -6,7 +6,7 @@
 
 import test from "ava";
 import { glob } from "glob";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 /**
  * Expected distribution files for Scramjet's bundles.
@@ -115,4 +115,46 @@ test("Package structure is valid for distribution", async (t) => {
 	t.true(hasJsFiles, "Distribution should contain JS files");
 	t.true(hasWasmFile, "Distribution should contain WASM file");
 	t.true(hasTypeFiles, "Library should contain core type definition files");
+});
+
+/**
+ * The rewriter renames `location` to `globals.templocid` in destructuring TARGETS —
+ * `({location} = x)`, `[location] = a`, `for (location of …)` — and never declares it: there is no
+ * program-level hoist, and the emit is a bare `Ty::TempVar => LL::replace(templocid)`.
+ *
+ * Sloppy mode turns that into an implicit global and the code runs. Strict mode does not, and every
+ * ES module is strict, so an ESM bundle doing `({ location } = …)` dies with
+ * `ReferenceError: $scramjet$temploc is not defined`. `wrap.ts` closes that by declaring the id as
+ * a WRITABLE global property, which makes the reference resolvable again.
+ *
+ * The guard is on the built bundle rather than the source because the failure only exists after the
+ * bundle runs, and because "the block is still in wrap.ts" is not the same claim as "the shipped
+ * bundle still installs it". `writable` is measured too: a non-writable property would turn the
+ * ReferenceError into a TypeError — a different crash, not a fix.
+ *
+ * @param {import("ava").ExecutionContext} t - AVA unit test context.
+ */
+test("Built bundle declares the rewriter's location temp id as a writable global", async (t) => {
+	for (const bundle of ["packages/core/dist/scramjet.js", "packages/core/dist/scramjet.mjs"]) {
+		const src = readFileSync(bundle, "utf8");
+
+		// One occurrence is the config literal (`templocid:"$scramjet$temploc"`). The install in
+		// wrap.ts is a second one — counting survives minification, which mangles locals but not
+		// the property name.
+		const occurrences = src.split("templocid").length - 1;
+		t.true(
+			occurrences >= 2,
+			`${bundle}: the temp id is declared in the config but never installed on the global — ` +
+				`strict-mode code doing \`({location} = x)\` will throw ReferenceError`
+		);
+
+		const install = src.lastIndexOf("globals.templocid");
+		t.true(install !== -1, `${bundle}: nothing reads globals.templocid`);
+		t.regex(
+			src.slice(install, install + 200),
+			/writable\s*:\s*(!0|true)/,
+			`${bundle}: the temp id is installed but not writable — the rewritten assignment to it ` +
+				`would throw TypeError instead of running`
+		);
+	}
 });
