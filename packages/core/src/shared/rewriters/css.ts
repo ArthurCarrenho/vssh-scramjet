@@ -1,5 +1,5 @@
 import { URLMeta, rewriteUrl, unrewriteUrl } from "@rewriters/url";
-import { ScramjetContext } from "@/shared";
+import { flagEnabled, ScramjetContext } from "@/shared";
 import { String } from "@/shared/snapshot";
 
 export function rewriteCss(
@@ -30,6 +30,13 @@ function handleCss(
 		type === "rewrite"
 			? rewriteUrl(u.trim(), context, meta!)
 			: unrewriteUrl(u.trim(), context);
+
+	// Só na ida, e só quando há meta (o unrewrite devolve CSS pra página e não deve inventar
+	// diferença: o que foi descartado na ida já não está no CSSOM pra ser lido de volta).
+	const dropViewTransitions =
+		type === "rewrite" &&
+		!!meta &&
+		flagEnabled("disableViewTransitions", context, meta.base);
 
 	const isWs = (c: string) =>
 		c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
@@ -120,6 +127,56 @@ function handleCss(
 		return true;
 	};
 
+	// Descarta a at-rule `@view-transition` inteira. É ela que liga a view transition de
+	// NAVEGAÇÃO, que não passa por `document.startViewTransition` — logo, o proxy do lado
+	// cliente (client/dom/viewtransition.ts) não alcança este caso, e a cascata também não:
+	// não existe valor de `navigation` que "desligue por cima" de forma confiável em toda
+	// folha. Remover é o único jeito determinístico. Ver ScramjetFlags.disableViewTransitions
+	// para o crash de compositor que motiva isso.
+	const tryViewTransition = () => {
+		if (!dropViewTransitions) return false;
+		if (css.slice(i, i + 16).toLowerCase() !== "@view-transition") return false;
+		if (isIdent(css[i + 16])) return false; // fronteira: não casar @view-transitions-x
+
+		let j = i + 16;
+		while (j < n && isWs(css[j])) j++;
+
+		// Forma sem bloco (`@view-transition;`) — inválida na prática, mas consumir é mais
+		// seguro que deixar um `@view-transition` órfão no output.
+		if (css[j] === ";") {
+			i = j + 1;
+			return true;
+		}
+		if (css[j] !== "{") return false; // algo inesperado: deixa o scan normal seguir
+
+		let depth = 0;
+		while (j < n) {
+			const c = css[j];
+			if (c === "/" && css[j + 1] === "*") {
+				const close = css.indexOf("*/", j + 2);
+				j = close === -1 ? n : close + 2;
+				continue;
+			}
+			if (c === '"' || c === "'") {
+				j = scanString(j); // uma `}` dentro de string não fecha bloco nenhum
+				continue;
+			}
+			if (c === "{") {
+				depth++;
+			} else if (c === "}") {
+				depth--;
+				if (depth === 0) {
+					j++;
+					break;
+				}
+			}
+			j++;
+		}
+		i = j;
+
+		return true;
+	};
+
 	while (i < n) {
 		const c = css[i];
 		if (c === "/" && css[i + 1] === "*") {
@@ -136,7 +193,7 @@ function handleCss(
 			i = end;
 			continue;
 		}
-		if (c === "@" && tryImport()) continue;
+		if (c === "@" && (tryViewTransition() || tryImport())) continue;
 		if ((c === "u" || c === "U") && tryUrl()) continue;
 		out += c;
 		i++;

@@ -45,6 +45,10 @@ export const defaultConfig: ScramjetConfig = {
 		allowFailedIntercepts: false,
 		encapsulateWorkers: true,
 		debugSourceURL: false,
+		// Ligada por padrão: uma view transition mal formada não degrada o proxy, ela MATA o
+		// renderer do embedder (ver ScramjetFlags.disableViewTransitions). Quem quiser as
+		// transições de volta num site específico liga pelo siteFlags, ciente do risco.
+		disableViewTransitions: true,
 	},
 	siteFlags: {},
 	maskedfiles: [],

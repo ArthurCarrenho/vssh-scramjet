@@ -28,6 +28,23 @@ export type ScramjetFlags = {
 	debugTrampolines: boolean;
 	debugSourceURL: boolean;
 	encapsulateWorkers: boolean;
+	/**
+	 * Neutraliza a View Transitions API na página proxiada: `startViewTransition` roda o
+	 * callback e resolve tudo sem transição, e a at-rule `@view-transition` é descartada
+	 * na reescrita de CSS (é ela que liga a transição de NAVEGAÇÃO, que não passa por
+	 * `startViewTransition`).
+	 *
+	 * Existe por causa de um crash real do compositor do Chromium: quando dois nós da
+	 * effect tree acabam com o mesmo `view_transition_element_resource_id`,
+	 * `draw_property_utils::UpdateRenderTarget` estoura
+	 * `CHECK(!resource_to_node.contains(...))` e o navegador MATA o renderer
+	 * (`STATUS_BREAKPOINT` no Windows, SIGILL / "Error code: 4" no Linux). Num proxy de
+	 * reescrita o estrago é maior que num site comum: o documento proxiado é same-origin
+	 * com quem o hospeda e divide a MESMA layer tree, então o CHECK derruba a janela do
+	 * embedder inteira, não só o frame. Diagnosticado a partir do minidump de um crash em
+	 * produção ao abrir o YouTube pelo motor.
+	 */
+	disableViewTransitions: boolean;
 };
 
 export interface ScramjetConfig {

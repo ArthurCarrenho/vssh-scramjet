@@ -1,6 +1,11 @@
 import { rewriteCss, unrewriteCss } from "@rewriters/css";
 import { ScramjetClient } from "@client/index";
-import { Reflect_apply, Reflect_get, Reflect_set } from "@/shared/snapshot";
+import {
+	Reflect_apply,
+	Reflect_get,
+	Reflect_set,
+	String,
+} from "@/shared/snapshot";
 
 export default function (client: ScramjetClient) {
 	client.Proxy("CSSStyleDeclaration.prototype.setProperty", {
@@ -27,9 +32,19 @@ export default function (client: ScramjetClient) {
 		},
 	});
 
+	// Uma regra que o rewriter DESCARTA inteira (hoje só `@view-transition`, ver
+	// rewriters/css.ts) não pode chegar aqui como string vazia: `insertRule("")` lança
+	// SyntaxError, e um site que insere a regra sem try/catch quebraria — trocar o crash do
+	// navegador por uma exceção na página não seria conserto. `@media not all{}` nunca casa,
+	// não lança, e mantém o índice devolvido válido, que é o que um `deleteRule()` posterior usa.
+	const NOOP_RULE = "@media not all{}";
 	client.Proxy("CSSStyleSheet.prototype.insertRule", {
 		apply(ctx) {
-			ctx.args[0] = rewriteCss(ctx.args[0], client.context, client.meta);
+			const rewritten = rewriteCss(ctx.args[0], client.context, client.meta);
+			ctx.args[0] =
+				rewritten.trim() === "" && String(ctx.args[0]).trim() !== ""
+					? NOOP_RULE
+					: rewritten;
 		},
 	});
 
