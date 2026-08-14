@@ -144,6 +144,22 @@ function isTransportNetworkError(e: unknown): boolean {
 	);
 }
 
+// vssh fork: condição de CICLO DE VIDA, não bug e não rede — o frame que iniciou a requisição já
+// não existe quando ela chega ao controller.
+//
+// Acontece o tempo todo e é normal: uma aba fecha (ou navega) e os beacons que a página já tinha
+// disparado continuam a caminho. O YouTube sozinho manda `stats/qoe` e `stats/watchtime` no
+// `pagehide`, e os dois chegam depois do frame morrer.
+//
+// Isto precisa existir por causa do log que passou a sair no caminho de subrecurso: sem separar,
+// fechar uma aba de vídeo enche o console de "Service Worker error" — e um console cheio de erro
+// normal é tão ruim quanto um console que esconde erro de verdade. Era o defeito que o
+// classificador acabou de consertar, chegando pela outra ponta.
+function isFrameGoneError(e: unknown): boolean {
+	const msg = e instanceof Error ? e.message : String(e ?? "");
+	return /No frame found for request|Port not found/i.test(msg);
+}
+
 const cookieResolvers: Record<string, (value: void) => void> = {};
 addEventListener("message", (e) => {
 	if (!e.data) return;
@@ -348,7 +364,7 @@ export async function route(event: FetchEvent): Promise<Response> {
 			// e o subrecurso simplesmente não vinha.
 			//
 			// O que a página vê continua idêntico; o que muda é ter rastro quando não é rede.
-			if (!isTransportNetworkError(e)) {
+			if (!isTransportNetworkError(e) && !isFrameGoneError(e)) {
 				console.error("Service Worker error (subrecurso):", event.request.url, e);
 			}
 			return Response.error();
