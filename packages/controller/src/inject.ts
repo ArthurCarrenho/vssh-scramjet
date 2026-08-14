@@ -285,6 +285,23 @@ class ExecutionContextWrapper {
 			this.handleServiceWorkerCookieMessage
 		);
 
+		// vssh fork: **sem esta linha o ouvinte acima não recebe nada durante a carga
+		// da página** — e é justamente durante a carga que o SW mais precisa de ack.
+		//
+		// A fila de mensagens do `ServiceWorkerContainer` nasce DESABILITADA e só é
+		// liberada por `startMessages()` ou por atribuir `onmessage`. `addEventListener`
+		// não libera. Sem liberar, a fila só sai sozinha depois que o documento termina
+		// de ser carregado e analisado.
+		//
+		// O que isso custava: o handler de fetch do SW dá `await` no ack do Set-Cookie
+		// com teto de 1000 ms ANTES de devolver a resposta. Todo recurso que setasse
+		// cookie durante a carga — o próprio documento, e cada script/CSS do `<head>` —
+		// esperava o segundo inteiro e terminava em `timed out waiting for set cookie`.
+		// Não era rede lenta: era a resposta parada esperando um ack que não tinha por
+		// onde chegar. E `document.cookie = ...` paga a mesma espera, porque manda pelo
+		// mesmo caminho.
+		navigator.serviceWorker?.startMessages?.();
+
 		this.injectScramjet();
 	}
 

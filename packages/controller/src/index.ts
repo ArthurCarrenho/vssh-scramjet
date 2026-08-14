@@ -179,10 +179,25 @@ async function readCookieState(): Promise<PersistedCookieState | null> {
 	}
 }
 
+// vssh fork: junta dois dumps de `CookieJar` (`JSON.stringify` de um `Record<id, Cookie>`,
+// onde o id já é `domínio@caminho@nome`) com o nosso vencendo por id. Se qualquer um dos
+// dois não for o objeto esperado, devolve o nosso: uma mescla não vale corromper o estado.
+function mergeCookieDumps(theirs: string, ours: string): string {
+	try {
+		const a = JSON.parse(theirs);
+		const b = JSON.parse(ours);
+		if (!a || typeof a !== "object" || Array.isArray(a)) return ours;
+		if (!b || typeof b !== "object" || Array.isArray(b)) return ours;
+		return JSON.stringify({ ...a, ...b });
+	} catch {
+		return ours;
+	}
+}
+
 async function writeCookieState(
 	cookies: string,
 	currentUpdatedAt: number
-): Promise<number> {
+): Promise<{ updatedAt: number; merged: boolean }> {
 	try {
 		const db = await openCookieDatabase();
 		const transaction = db.transaction(COOKIE_STORE_NAME, "readwrite");
@@ -195,16 +210,35 @@ async function writeCookieState(
 			currentUpdatedAt + 1,
 			(existing?.updatedAt ?? 0) + 1
 		);
+		// vssh fork: **se alguém gravou depois da nossa leitura, o que está no disco não
+		// pode ser simplesmente sobrescrito.** `existing` já estava sendo lido aqui, mas
+		// só para calcular o carimbo — os cookies dele iam para o lixo.
+		//
+		// O caminho normal (`sendSetCookie`) faz ler → aplicar → gravar, e isso basta
+		// enquanto ninguém grava no meio. Só que a leitura e a gravação são transações
+		// SEPARADAS, então duas abas se intercalam: A lê, B lê, A grava, B grava — e a
+		// gravação de B leva junto o estado que A tinha lido, sem os cookies de A. O
+		// sintoma é "logei numa aba e a outra me deslogou".
+		//
+		// Só mesclamos quando o disco está à FRENTE do que lemos; caso contrário o nosso
+		// dump já contém tudo, e mesclar aí sim ressuscitaria o que apagamos de
+		// propósito. Na mescla o nosso vence por id, que é o lado certo do erro: o
+		// cookie que acabou de chegar é o mais novo. O que pode voltar é um cookie que a
+		// outra aba tinha e nós apagamos na janela entre as duas gravações — e mesmo esse
+		// continua sujeito ao próprio `expires` na leitura.
+		const merged = !!existing && existing.updatedAt > currentUpdatedAt;
 		const state: PersistedCookieState = {
 			updatedAt,
-			cookies,
+			cookies: merged
+				? mergeCookieDumps(existing!.cookies, cookies)
+				: cookies,
 		};
 		store.put(state, COOKIE_STATE_KEY);
 		await transactionToPromise(transaction);
-		return updatedAt;
+		return { updatedAt, merged };
 	} catch (error) {
 		console.error("Failed to persist controller cookies:", error);
-		return currentUpdatedAt;
+		return { updatedAt: currentUpdatedAt, merged: false };
 	}
 }
 
@@ -612,8 +646,24 @@ export class Controller {
 			return;
 		}
 
-		if (this.cookieSyncPromise) {
-			return this.cookieSyncPromise;
+		// vssh fork: **com `force`, uma carga já em voo não serve.** Quem passa `force` é
+		// o `sendSetCookie`, e ele o faz para ler o estado MAIS RECENTE antes de escrever
+		// o jar inteiro por cima. Uma carga em voo pode ter feito o `readCookieState()`
+		// antes de a outra aba gravar — devolvê-la entregava justamente o estado velho
+		// que o `force` existe para evitar, e a gravação seguinte apagava o que a outra
+		// aba tinha acabado de salvar.
+		//
+		// Esperar a que está em voo antes de começar a nossa é o mínimo: ela pode estar
+		// no meio de um `cookieJar.load()`, e duas cargas concorrentes sobre o mesmo jar
+		// se atropelam.
+		// O laço (em vez de um `if`) serializa: dois `force` esperando a MESMA carga
+		// acordam juntos, e sem ele o segundo dispararia uma leitura concorrente com a
+		// que o primeiro acabou de começar.
+		while (this.cookieSyncPromise) {
+			if (!force) {
+				return this.cookieSyncPromise;
+			}
+			await this.cookieSyncPromise.catch(() => {});
 		}
 
 		this.cookieSyncPromise = (async () => {
@@ -631,7 +681,7 @@ export class Controller {
 	}
 
 	async persistCookies(): Promise<void> {
-		const updatedAt = await writeCookieState(
+		const { updatedAt, merged } = await writeCookieState(
 			this.cookieJar.dump(),
 			this.cookieUpdatedAt
 		);
@@ -640,7 +690,10 @@ export class Controller {
 		}
 
 		this.cookieUpdatedAt = updatedAt;
-		this.cookieSyncDirty = false;
+		// vssh fork: houve mescla ⇒ o disco tem cookies de outra aba que este jar não
+		// tem, então "sincronizado" seria mentira. Deixar sujo faz a próxima leitura
+		// buscá-los, em vez de este jar seguir servindo um estado incompleto.
+		this.cookieSyncDirty = merged;
 		this.cookieSyncChannel.postMessage({
 			updatedAt,
 		});

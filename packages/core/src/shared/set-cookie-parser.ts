@@ -117,7 +117,24 @@ function parse(input: string | undefined): ParsedCookie[] {
 		return [];
 	}
 
-	return [input]
+	// vssh fork: era `[input]` — uma string, um cookie. O `splitCookiesString` logo abaixo
+	// existe exatamente para isto, está exportado, e **não era chamado por ninguém** (o
+	// arquivo é vendorizado de `set-cookie-parser`, e a ligação se perdeu na vendorização).
+	//
+	// Por que importa: se a camada de transporte entregar dois `Set-Cookie` juntos num
+	// header só — o que um proxy pode fazer, e o que não dá para descartar daqui sem medir
+	// dentro do WASM do libcurl —, o `parseString` corta no primeiro `;` e `"a=1, b=2"`
+	// vira o cookie `a` com valor `"1, b=2"`. Um cookie corrompido e outro perdido, calados.
+	//
+	// O preço de dividir sempre: um valor que contenha `, algo=` seria partido em dois. É
+	// aceitável porque a RFC 6265 exclui a vírgula do `cookie-octet` (valor com vírgula tem
+	// de vir entre aspas ou percent-encoded), e porque o corte só acontece quando depois da
+	// vírgula vem mesmo um `nome=` — o que preserva `Expires=Wed, 09 Jun 2021 ...`, onde
+	// depois da vírgula vem uma data.
+	//
+	// Com isto a resposta deixa de depender de qual formato o transporte usa: os dois
+	// funcionam, e a medição que estava planejada não precisa mais decidir nada.
+	return splitCookiesString(input)
 		.map((str) => parseString(str))
 		.filter((cookie): cookie is ParsedCookie => cookie !== null);
 }
