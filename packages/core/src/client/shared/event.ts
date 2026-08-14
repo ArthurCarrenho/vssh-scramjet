@@ -19,6 +19,26 @@ export default function (client: ScramjetClient, self: Self) {
 					return false;
 				}
 
+				// vssh fork: a outra metade do `targetOrigin` (ver `postmessage.ts`). O
+				// remetente pediu uma origem; a checagem do navegador não pôde ser usada,
+				// porque a origem REAL é a do proxy — então ela é feita aqui, onde este
+				// cliente sabe a própria origem LÓGICA.
+				//
+				// Sem isto, um `postMessage(token, "https://conhecido")` era entregue a
+				// qualquer janela endereçada: a restrição que o site escreveu justamente
+				// para o token não vazar deixava de existir depois da reescrita.
+				if (
+					iswindow &&
+					this.data &&
+					typeof this.data === "object" &&
+					"$scramjet$targetOrigin" in this.data
+				) {
+					const alvo = this.data.$scramjet$targetOrigin;
+					if (typeof alvo === "string" && alvo !== client.url.origin) {
+						return false;
+					}
+				}
+
 				return true;
 			},
 			ports() {

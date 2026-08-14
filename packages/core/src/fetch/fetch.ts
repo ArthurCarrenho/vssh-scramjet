@@ -12,6 +12,7 @@ import {
 } from ".";
 import { rewriteUrl, unrewriteBlob, unrewriteUrl } from "@rewriters/url";
 import { QP, parseRequest } from "./parse";
+import { siteRegistravel } from "@/shared/site";
 import { ScramjetHeaders } from "@/shared";
 import { isDocument, isRedirect, normalizeContentType } from "./util";
 import { rewriteBody } from "./body";
@@ -285,14 +286,12 @@ async function handleBlobOrDataUrlFetch(
 	};
 }
 
-/** Simplified registrable-domain check used for cross-site redirect detection. */
+// vssh fork: era a SEGUNDA cópia do mesmo `slice(-2)` (a outra estava em `headers.ts`), e
+// tinha o mesmo defeito: entre dois `.com.br` a detecção de redirect cross-site nunca
+// disparava. Agora as duas perguntam ao mesmo lugar. O nome exportado fica, porque é o que os
+// chamadores usam.
 export function registrableDomainForRedirect(hostname: string): string {
-	if (/^[\d.]+$/.test(hostname) || hostname.includes(":")) return hostname;
-	const labels = hostname.split(".");
-	if (labels.length <= 1) return hostname;
-	if (labels[0] === "www") return labels.slice(1).join(".");
-	if (labels.length === 2) return hostname;
-	return labels.slice(-2).join(".");
+	return siteRegistravel(hostname);
 }
 
 async function handleCookies(

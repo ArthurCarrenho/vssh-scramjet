@@ -66,6 +66,31 @@ export default function (client: ScramjetClient, self: Self) {
 				// eval("debugger");
 
 				// * origin because obviously
+				//
+				// vssh fork: o `*` continua sendo necessário — a origem REAL da janela alvo
+				// é a do proxy, então a checagem do navegador reprovaria qualquer origem
+				// lógica que o site pedisse. O que faltava era não JOGAR FORA o pedido.
+				//
+				// ⚠ **A restrição do remetente é decisão de segurança dele**, e a mais
+				// comum: `postMessage(token, "https://conhecido")` existe justamente para o
+				// token NÃO ir a mais ninguém. Reescrevendo para `*` sem reimpor nada, o
+				// token passava a ir para qualquer janela que o remetente endereçasse.
+				//
+				// Então o alvo pedido viaja no envelope e é conferido na RECEPÇÃO, onde o
+				// cliente sabe a própria origem lógica — ver `_init` em `event.ts`.
+				const alvoPedido =
+					typeof ctx.args[1] === "string"
+						? ctx.args[1]
+						: ctx.args[1] && typeof ctx.args[1] === "object"
+							? ctx.args[1].targetOrigin
+							: undefined;
+				if (typeof alvoPedido === "string" && alvoPedido !== "*") {
+					// `/` quer dizer "a mesma origem de quem manda", e é resolvido aqui, do
+					// lado que a conhece.
+					ctx.args[0].$scramjet$targetOrigin =
+						alvoPedido === "/" ? ctx.args[0].$scramjet$origin : alvoPedido;
+				}
+
 				if (typeof ctx.args[1] === "string") ctx.args[1] = "*";
 				if (typeof ctx.args[1] === "object") ctx.args[1].targetOrigin = "*";
 

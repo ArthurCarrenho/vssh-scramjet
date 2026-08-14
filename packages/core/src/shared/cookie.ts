@@ -2,6 +2,7 @@
 import { JSON_parse, JSON_stringify } from "@/shared/snapshot";
 import { _Date } from "./snapshot";
 import parse from "./set-cookie-parser";
+import { dominioCasa } from "./site";
 
 export type Cookie = {
 	name: string;
@@ -73,6 +74,19 @@ export class CookieJar {
 				if (!parsedCookie.secure) continue;
 				if (parsedCookie.domain) continue;
 				if (parsedCookie.path !== "/") continue;
+			}
+
+			// vssh fork: **o `Domain=` tem de casar com o host que mandou o cookie** (RFC 6265
+			// §5.3.6). Sem esta linha o jar guardava qualquer coisa: um site proxiado mandava
+			// `Set-Cookie: x=1; Domain=google.com` e o jar guardava — e depois ENVIAVA para o
+			// google. E como todas as origens proxiadas compartilham UM jar, valia nas duas
+			// direções: setar `Domain=` num sufixo amplo também servia para ler o que os
+			// outros escreveram.
+			//
+			// Recusar o cookie inteiro (e não "corrigir" o domínio) é o que o navegador faz, e
+			// é o lado certo do erro: um cookie que não deveria existir não existe.
+			if (parsedCookie.domain && !dominioCasa(url.hostname, parsedCookie.domain)) {
+				continue;
 			}
 
 			const hostOnly = !parsedCookie.domain;

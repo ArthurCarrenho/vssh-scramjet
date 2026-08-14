@@ -5,6 +5,7 @@ import {
 	unrewriteUrl,
 	URLMeta,
 } from "@/shared";
+import { siteRegistravel as registrableDomain } from "@/shared/site";
 import {
 	ScramjetFetchHandler,
 	ScramjetFetchParsed,
@@ -502,27 +503,8 @@ function computeSameSiteContext(
 	return "cross-site";
 }
 
-/**
- * Compute the "registrable domain" (eTLD+1) of a hostname for same-site comparison.
- * This is a simplified implementation that handles common test cases
- * (localhost, IPs, and typical domain structures) without a full PSL lookup.
- */
-function registrableDomain(hostname: string): string {
-	// IPv4 / IPv6: site = exact IP
-	if (/^[\d.]+$/.test(hostname) || hostname.includes(":")) return hostname;
-
-	const labels = hostname.split(".");
-	if (labels.length <= 1) return hostname; // bare hostname like "localhost"
-
-	// Strip a leading "www." for same-site comparison so that
-	// www.example.com and example.com are treated as the same site.
-	// More complex cases (e.g. s1.s2.example.co.uk) are not handled here
-	// but are uncommon in test environments.
-	if (labels[0] === "www") return labels.slice(1).join(".");
-
-	// For two-label hostnames like "example.com", use as-is
-	if (labels.length === 2) return hostname;
-
-	// For longer hostnames, use the last two labels as a rough eTLD+1
-	return labels.slice(-2).join(".");
-}
+// vssh fork: a implementação local saiu para `@/shared/site` (`siteRegistravel`), que conhece
+// sufixo multi-rótulo. Havia DUAS cópias deste `slice(-2)` — a outra em `fetch.ts` —, e as
+// duas tratavam `folha.com.br` e `uol.com.br` como o MESMO site. Daí `computeSameSiteContext`
+// respondia "same-site" para sites sem relação, o `CookieJar` deixava de filtrar por
+// `SameSite`, e o jar é ÚNICO para todas as origens proxiadas.

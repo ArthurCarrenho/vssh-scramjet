@@ -445,7 +445,17 @@ function traverseParsedHtml(
 			node.attribs["http-equiv"].toLowerCase() === "content-security-policy"
 		) {
 			// just delete it. this needs to be emulated eventually but like
-			node = new Comment(node.attribs.content);
+			//
+			// vssh fork: **o conteúdo do site NÃO entra mais no comentário.** O
+			// `dom-serializer` emite o dado verbatim, como `<!--${data}-->`; um `-->`
+			// dentro do atributo `content` fechava o comentário mais cedo e o resto virava
+			// MARCAÇÃO — injeção controlada pelo site, no documento onde todas as origens
+			// proxiadas compartilham uma origem real.
+			//
+			// Marcador fixo: preserva o motivo para quem inspeciona o DOM e não tem como
+			// carregar dado de terceiro. (O `content` também podia estar ausente, e aí o
+			// comentário virava o texto "undefined".)
+			node = new Comment(" scramjet: <meta> CSP removida ");
 		} else if (node.attribs["http-equiv"].toLowerCase() === "refresh") {
 			const refresh = parseDeclarativeRefresh(node.attribs.content || "");
 			if (refresh && refresh.url !== null && refresh.url.length > 0) {
