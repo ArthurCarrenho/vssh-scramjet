@@ -86,6 +86,32 @@ export class RpcHelper<
 		}
 	}
 
+	// vssh fork: **rejeita tudo que está em voo.** Uma chamada guarda `{resolve, reject}` no mapa e
+	// espera a resposta chegar pelo canal; se o canal MORRE, essa resposta não vai chegar nunca — e
+	// a promessa não resolve nem rejeita. Quem deu `await` fica pendurado para sempre, e a entrada
+	// no mapa também: é promessa presa e vazamento no mesmo lugar.
+	//
+	// Não é hipótese: `setupMessagePort` fecha a porta anterior e manda uma nova ao Service Worker,
+	// e o SW tira a referência antiga do array `tabs`. Toda chamada que estava em voo naquele
+	// instante caiu nesse buraco.
+	//
+	// Por que isto em vez de um teto de tempo: o que estas chamadas carregam inclui `request`, ou
+	// seja, uma requisição HTTP inteira pelo túnel. Um teto que não atrapalhasse download de 2 GB
+	// seria longo demais para servir de rede de segurança, e um teto curto quebraria o download. O
+	// evento que importa não é "demorou", é "o canal não existe mais" — e esse é observável.
+	rejectPending(reason: string) {
+		if (!this.promiseCallbacks.size) return;
+		const pendentes = [...this.promiseCallbacks.values()];
+		this.promiseCallbacks.clear();
+		for (const cb of pendentes) {
+			try {
+				cb.reject(new Error(reason));
+			} catch {
+				// um chamador que lança no próprio catch não pode impedir os outros de serem avisados
+			}
+		}
+	}
+
 	call<Method extends keyof Remote>(
 		method: Method,
 		args: Remote[Method][0],

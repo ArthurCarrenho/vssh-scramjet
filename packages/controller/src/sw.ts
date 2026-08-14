@@ -104,12 +104,43 @@ function renderErrorPage(error: Error): string {
 
 // vssh fork: distingue FALHA DE TRANSPORTE/REDE (libcurl/wisp: URL morta, host bloqueado, arquivo
 // parcial, DNS, timeout, conexão recusada/resetada, stream abortado) de um BUG INTERNO do motor.
-// Falha de rede é o comportamento normal da web — não deve poluir o console nem virar página de
-// erro 500 num subrecurso. Só bug inesperado merece log.
+// Falha de rede é o comportamento normal da web — não deve poluir o console. Só bug inesperado
+// merece log.
+//
+// ⚠ **A regra anterior casava PALAVRA SOLTA, e as palavras eram comuns demais:** `connection`,
+// `closed`, `abort`, `stream`, `reset`, `refused`, `EOF`. Qualquer bug cuja mensagem contivesse
+// uma delas passava por "falha de rede" e sumia do console.
+//
+// Não é hipótese: o caso mais caro deste stack é `connection.streams is not iterable`, o
+// `TypeError` que crashava o processo do wisp na primeira conexão. Ele casa DUAS das palavras. E
+// `/EOF/i` casa dentro de `typeof`, que aparece em mensagem de erro de motor a toda hora.
+//
+// Isto atrapalha depurar todo o resto: procurar um bug com um console que aprendeu a escondê-lo é
+// procurar no escuro. As regras abaixo casam FRASE, não palavra, e olham o tipo do erro quando ele
+// carrega essa informação.
 function isTransportNetworkError(e: unknown): boolean {
+	// `AbortError` e `NetworkError` são nomes de DOMException, não texto de mensagem — quando o erro
+	// os carrega, o nome é evidência melhor que qualquer regex sobre a mensagem.
+	const nome = (e as { name?: unknown })?.name;
+	if (nome === "AbortError" || nome === "NetworkError" || nome === "TimeoutError") {
+		return true;
+	}
+
 	const msg = e instanceof Error ? e.message : String(e ?? "");
-	return /error code \d+|Transferred a partial|Failed to fetch|NetworkError|connection|timed?\s?out|refused|reset|closed|abort|ECONN|ENOTFOUND|EOF|stream/i.test(
-		msg
+	return (
+		// libcurl-transport: as duas formas que ele lança de verdade.
+		/Request failed with error code \d+|Request failed because redirects were disallowed/i.test(msg) ||
+		/error code \d+/i.test(msg) ||
+		/Transferred a partial/i.test(msg) ||
+		// Rede, pelo vocabulário do próprio navegador.
+		/Failed to fetch|NetworkError|Load failed|The operation was aborted/i.test(msg) ||
+		// `errno` do lado do servidor — com fronteira de palavra, senão `EOF` casa `typeof`.
+		/\b(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|EAI_AGAIN|EOF)\b/.test(msg) ||
+		// Frases, não palavras soltas: "connection reset" é rede; "connection" sozinho é qualquer coisa.
+		/(connection|socket|stream)\s+(closed|reset|refused|aborted|failed|lost|ended)/i.test(msg) ||
+		/(closed|reset|refused|aborted) by (peer|remote|host)/i.test(msg) ||
+		/\btimed?\s?out\b/i.test(msg) ||
+		/host (blocked|not allowed)/i.test(msg)
 	);
 }
 
@@ -310,6 +341,16 @@ export async function route(event: FetchEvent): Promise<Response> {
 		// <img>/<script> disparam onerror, em vez de receber uma página HTML 500 como "conteúdo".
 		// Sem console.error, sem 500: URL morta/host bloqueado é normal e não deve poluir nada.
 		if (event.request.mode !== "navigate") {
+			// vssh fork: **o `Response.error()` fica, o silêncio não.** Devolver erro de rede real ao
+			// consumidor é o certo — é o que um navegador faz, e o `<img>`/`<script>`/`fetch()` da
+			// página precisa disso para reagir. Mas isto era o único tratamento, então um BUG do motor
+			// dentro do caminho de subrecurso desaparecia por completo: nada no console, nada na tela,
+			// e o subrecurso simplesmente não vinha.
+			//
+			// O que a página vê continua idêntico; o que muda é ter rastro quando não é rede.
+			if (!isTransportNetworkError(e)) {
+				console.error("Service Worker error (subrecurso):", event.request.url, e);
+			}
 			return Response.error();
 		}
 		// Navegação principal: mantém a página de erro legível (renderErrorPage) pra o usuário ver

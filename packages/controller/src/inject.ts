@@ -210,11 +210,77 @@ function createFrameId() {
 		.join("")}`;
 }
 
+// vssh fork: **UM ouvinte por documento, não um por contexto de execução.**
+//
+// Cada `ExecutionContextWrapper` registrava o próprio `addEventListener("message", …)` em
+// `navigator.serviceWorker` e nunca o removia. `hookSubcontext` cria um wrapper por realm aninhado
+// (todo iframe mesma-origem que a página abrir), então uma página que cria frames em laço acumulava
+// ouvintes sem teto — e cada ouvinte mantinha vivo o wrapper inteiro, com o `CookieJar` dele.
+//
+// E o custo não era só memória: com N ouvintes, CADA lote de cookies do controller era processado N
+// vezes e respondido com N acks. O trabalho crescia junto com o vazamento.
+//
+// Agora o ouvinte é um, e ele distribui para os contextos vivos — que continuam precisando do lote,
+// porque cada um tem o próprio jar. O `Set` morre com o documento, junto com tudo que ele guarda.
+const contextosDoDocumento = new Set<ExecutionContextWrapper>();
+let ouvinteDeCookieInstalado = false;
+
+function instalarOuvinteDeCookie() {
+	if (ouvinteDeCookieInstalado) return;
+	ouvinteDeCookieInstalado = true;
+
+	navigator.serviceWorker?.addEventListener("message", (event: MessageEvent) => {
+		if (
+			!event.data?.$controller$setCookie ||
+			typeof event.data.$controller$setCookie !== "object"
+		) {
+			return;
+		}
+
+		const payload = event.data.$controller$setCookie as {
+			cookies?: SerializedCookieSyncEntry[];
+			options?: CookieSyncOptions;
+			id?: string;
+		};
+
+		for (const contexto of contextosDoDocumento) {
+			try {
+				contexto.aplicarLoteDeCookies(payload);
+			} catch (e) {
+				// Um contexto que falhe não pode impedir os outros de receberem o lote, nem impedir o
+				// ack — sem ack, o handler de fetch do SW espera o teto inteiro.
+				console.error("Failed to apply cookie batch", e);
+			}
+		}
+
+		// UM ack, não um por contexto. O resolvedor do lado do SW some no primeiro, então os demais
+		// eram trabalho jogado fora.
+		if (typeof payload.id === "string") {
+			const targetSw = navigator.serviceWorker?.controller ?? sw;
+			targetSw?.postMessage({ $sw$setCookieDone: { id: payload.id } });
+		}
+	});
+
+	// **Sem esta linha o ouvinte acima não recebe nada durante a carga da página** — e é justamente
+	// durante a carga que o SW mais precisa do ack.
+	//
+	// A fila de mensagens do `ServiceWorkerContainer` nasce DESABILITADA e só é liberada por
+	// `startMessages()` ou por atribuir `onmessage`; `addEventListener` não libera. Sem liberar, a
+	// fila só sai sozinha depois que o documento termina de ser carregado e analisado.
+	//
+	// O que isso custava: o handler de fetch do SW dá `await` no ack do Set-Cookie com teto de
+	// 1000 ms ANTES de devolver a resposta. Todo recurso que setasse cookie durante a carga — o
+	// próprio documento, e cada script/CSS do `<head>` — esperava o segundo inteiro e terminava em
+	// `timed out waiting for set cookie`. Não era rede lenta: era a resposta parada esperando um ack
+	// que não tinha por onde chegar. E `document.cookie = ...` paga a mesma espera, pelo mesmo
+	// caminho.
+	navigator.serviceWorker?.startMessages?.();
+}
+
 class ExecutionContextWrapper {
 	client!: ScramjetClient;
 	cookieJar: CookieJar;
 	transport: RemoteTransport;
-	private handleServiceWorkerCookieMessage: (event: MessageEvent) => void;
 
 	constructor(
 		public global: typeof globalThis,
@@ -235,74 +301,34 @@ class ExecutionContextWrapper {
 		this.cookieJar = new CookieJar();
 		this.cookieJar.load(this.init.cookies);
 
-		this.handleServiceWorkerCookieMessage = (event: MessageEvent) => {
-			if (
-				!event.data?.$controller$setCookie ||
-				typeof event.data.$controller$setCookie !== "object"
-			) {
-				return;
-			}
-
-			const payload = event.data.$controller$setCookie as {
-				cookies?: SerializedCookieSyncEntry[];
-				options?: CookieSyncOptions;
-				id?: string;
-			};
-
-			if (payload.options?.clear) {
-				this.cookieJar.clear();
-			}
-
-			if (Array.isArray(payload.cookies)) {
-				for (const cookie of payload.cookies) {
-					if (
-						typeof cookie?.url !== "string" ||
-						typeof cookie.cookie !== "string"
-					) {
-						continue;
-					}
-
-					try {
-						this.cookieJar.setCookies(cookie.cookie, new URL(cookie.url));
-					} catch {
-						console.error("Failed to set cookie", cookie);
-					}
-				}
-			}
-
-			if (typeof payload.id === "string") {
-				const targetSw = navigator.serviceWorker?.controller ?? sw;
-				targetSw?.postMessage({
-					$sw$setCookieDone: {
-						id: payload.id,
-					},
-				});
-			}
-		};
-
-		navigator.serviceWorker?.addEventListener(
-			"message",
-			this.handleServiceWorkerCookieMessage
-		);
-
-		// vssh fork: **sem esta linha o ouvinte acima não recebe nada durante a carga
-		// da página** — e é justamente durante a carga que o SW mais precisa de ack.
-		//
-		// A fila de mensagens do `ServiceWorkerContainer` nasce DESABILITADA e só é
-		// liberada por `startMessages()` ou por atribuir `onmessage`. `addEventListener`
-		// não libera. Sem liberar, a fila só sai sozinha depois que o documento termina
-		// de ser carregado e analisado.
-		//
-		// O que isso custava: o handler de fetch do SW dá `await` no ack do Set-Cookie
-		// com teto de 1000 ms ANTES de devolver a resposta. Todo recurso que setasse
-		// cookie durante a carga — o próprio documento, e cada script/CSS do `<head>` —
-		// esperava o segundo inteiro e terminava em `timed out waiting for set cookie`.
-		// Não era rede lenta: era a resposta parada esperando um ack que não tinha por
-		// onde chegar. E `document.cookie = ...` paga a mesma espera, porque manda pelo
-		// mesmo caminho.
-		navigator.serviceWorker?.startMessages?.();
+		contextosDoDocumento.add(this);
+		instalarOuvinteDeCookie();
 
 		this.injectScramjet();
+	}
+
+	// Aplica um lote de cookies vindo do controller a ESTE jar. Cada contexto de execução tem o
+	// seu, então o lote precisa chegar a todos — o que mudou é quem escuta (ver o ouvinte único
+	// logo acima da classe).
+	aplicarLoteDeCookies(payload: {
+		cookies?: SerializedCookieSyncEntry[];
+		options?: CookieSyncOptions;
+	}) {
+		if (payload.options?.clear) {
+			this.cookieJar.clear();
+		}
+
+		if (!Array.isArray(payload.cookies)) return;
+		for (const cookie of payload.cookies) {
+			if (typeof cookie?.url !== "string" || typeof cookie.cookie !== "string") {
+				continue;
+			}
+			try {
+				this.cookieJar.setCookies(cookie.cookie, new URL(cookie.url));
+			} catch {
+				console.error("Failed to set cookie", cookie);
+			}
+		}
 	}
 
 	injectScramjet() {

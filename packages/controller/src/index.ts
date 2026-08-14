@@ -592,6 +592,14 @@ export class Controller {
 				// ignore
 			}
 			this.port = null;
+			// vssh fork: a resposta de qualquer chamada em voo vinha por ESTA porta, e ela acabou de
+			// ser fechada — o Service Worker também já tirou a referência dela do array `tabs`. Sem
+			// isto a promessa de cada uma nunca resolve NEM rejeita: quem deu `await` fica pendurado
+			// para sempre, e a entrada no mapa de callbacks fica junto. Rejeitar aqui transforma um
+			// travamento permanente numa falha que o chamador pode tratar e retentar na porta nova.
+			this.rpc?.rejectPending(
+				"A porta de comunicação com o Service Worker foi substituída antes da resposta chegar."
+			);
 		}
 
 		const channel = new MessageChannel();
