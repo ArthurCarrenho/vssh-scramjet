@@ -101,6 +101,14 @@ impl<'alloc, 'data, T: Transform<'data>> Transformer<'alloc, 'data, T> {
 		self.inner.is_empty()
 	}
 
+	/// Drop the accumulated changes without applying them.
+	///
+	/// Only useful on an error path, and it has to run BEFORE the allocator is reset: the changes
+	/// borrow from it, so they must not outlive it.
+	pub fn clear(&mut self) {
+		self.inner.clear();
+	}
+
 	pub fn perform(
 		&mut self,
 		js: &'data str,

@@ -368,6 +368,11 @@ impl<'alloc: 'data, 'data> JsChanges<'alloc, 'data> {
 	}
 
 	#[inline]
+	pub fn clear(&mut self) {
+		self.inner.clear();
+	}
+
+	#[inline]
 	pub fn perform(
 		&mut self,
 		js: &'data str,

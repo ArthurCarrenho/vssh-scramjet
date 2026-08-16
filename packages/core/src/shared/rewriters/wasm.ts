@@ -56,3 +56,33 @@ export function getRewriter(
 
 	return [obj.rewriter, () => (obj.inUse = false)];
 }
+
+/**
+ * vssh fork: joga o rewriter fora em vez de devolvê-lo ao pool.
+ *
+ * ⚠ O pool acima **nunca despeja ninguém**, então uma instância que entra em estado ruim volta a
+ * ser entregue pelo resto da vida da página. E dá para entrar: o `wasm-snip` troca o corpo das
+ * funções podadas por `unreachable`, e um trap do wasm sobe direto para o JS sem dar ao lado Rust
+ * a menor chance de devolver o empréstimo que ele tinha tomado — dali em diante toda chamada
+ * naquela instância falha com "Already rewriting".
+ *
+ * Como falha de reescrita caía no `allowInvalidJs` e devolvia a fonte ORIGINAL, um único trap
+ * transformava o rewriter num cano furado: todo script seguinte servido **sem wrap**, em silêncio.
+ * Código sem wrap enxerga a `location` e a origem reais — a mesma família do painel do YouTube e
+ * do reCAPTCHA.
+ *
+ * O lado Rust repõe o próprio estado nos caminhos que ele controla (`Rewriter::restore`); isto
+ * cobre os que ele não controla. É por isso que os dois existem.
+ */
+export function discardRewriter(rewriter: Rewriter) {
+	const index = rewriters.findIndex((x) => x.rewriter === rewriter);
+	if (index === -1) return;
+
+	rewriters.splice(index, 1);
+
+	try {
+		rewriter.free();
+	} catch {
+		// já liberado, ou longe demais para liberar — o que importa aqui é soltar a referência
+	}
+}

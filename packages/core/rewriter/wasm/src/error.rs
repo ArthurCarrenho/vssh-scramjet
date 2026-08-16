@@ -1,7 +1,7 @@
 use std::cell::BorrowMutError;
 
 use js::RewriterError as JsRewriterError;
-use js_sys::Error;
+use js_sys::{Error, Reflect};
 use thiserror::Error;
 use wasm_bindgen::{JsError, JsValue};
 
@@ -31,11 +31,29 @@ impl From<JsValue> for RewriterError {
 
 impl From<RewriterError> for JsValue {
 	fn from(value: RewriterError) -> Self {
-		JsError::from(value).into()
+		let source_fault = value.is_source_fault();
+		let value: JsValue = JsError::from(value).into();
+
+		// The JS side has to tell "this source does not parse" (safe to hand back untouched, it
+		// cannot execute) from "we failed" (must NOT be handed back: valid code served unrewritten
+		// runs without the wrap). thiserror's Display is not a contract worth grepping, so the
+		// answer travels as a property on the error itself. See rewriteJs in shared/rewriters/js.ts.
+		let _ = Reflect::set(&value, &"scramjetSourceFault".into(), &source_fault.into());
+
+		value
 	}
 }
 
 impl RewriterError {
+	/// Is the SOURCE at fault (invalid javascript), rather than the rewriter?
+	///
+	/// Only the js rewriter can answer yes. Everything else in this enum is a failure of ours --
+	/// a bad config object, a reflect that did not take, a rewriter already borrowed -- and those
+	/// happen on source that was perfectly valid and was about to run.
+	pub fn is_source_fault(&self) -> bool {
+		matches!(self, Self::JsRewriter(err) if err.is_source_fault())
+	}
+
 	pub fn not_str(x: &'static str) -> Self {
 		Self::Not(x, "string")
 	}

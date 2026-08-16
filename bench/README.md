@@ -20,9 +20,19 @@ node yt-msg.mjs        # que mensagens atravessam entre o iframe e a página, e 
 node cap-repro.mjs     # o reCAPTCHA abre o desafio, ou fica girando?
 node cap-rede.mjs      # que chamadas o reCAPTCHA faz, e o que elas respondem?
 node cookie-recusa.mjs # a conferência de Domain= recusa cookie legítimo em sites reais?
+node eval-sonda.mjs    # `eval("x='")` ainda dá o SyntaxError que o site espera?
 ```
 
 `BENCH_ALVO` troca a URL, `BENCH_ESPERA` o tempo de assentamento, `BENCH_LIMITE` o prazo de morte.
+
+`rewriter-falha.mjs` é o único que **não** precisa nem do devserver nem do playwright: ele carrega o
+wasm direto no Node e pergunta de quem é a culpa quando a reescrita falha. É o mais rápido de rodar
+e o que dá a resposta mais dura, então comece por ele.
+
+```sh
+cd packages/core && npm run rewriter:build   # o wasm precisa existir
+node bench/rewriter-falha.mjs
+```
 
 ## A metodologia
 
@@ -46,6 +56,17 @@ o rspack rebuildar, rodar o probe. Três rodadas levaram de "o captcha parou" a 
 dois valores comparados encerrou a discussão:
 `{ pedido: "https://www.google.com:443", minhaOrigem: "https://www.google.com" }`.
 
+**Nem tudo precisa de navegador.** O wasm do rewriter carrega no Node em três linhas
+(`initSync` + `new WebAssembly.Module`), e o `codec.encode` é uma função JS comum — dá para fazer
+ela levantar e observar o que o rewriter faz com isso. `rewriter-falha.mjs` provou em segundos que
+uma falha do rewriter de URL deixava a instância **inutilizável para sempre**, coisa que nenhum
+teste de navegador ia isolar. Quando a pergunta é sobre o motor e não sobre o site, fale com o
+motor.
+
+**Reconstrua sem o conserto e confira que a bancada acusa.** É o passo que separa "meu teste passa"
+de "meu teste testa": com o wasm anterior, `rewriter-falha.mjs` dá 1/4 e diz `Already rewriting` na
+linha certa. Um teste que nunca foi visto falhando não vale nada.
+
 ## Armadilhas que fizeram o teste medir a coisa errada
 
 - **Viewport pequeno serve outra interface.** Com o padrão do headless o YouTube nem renderiza o
@@ -62,6 +83,12 @@ dois valores comparados encerrou a discussão:
   `page.on('response')`.
 - **Os frames são recriados no meio do fluxo.** Guardar a referência e usá-la depois dá
   `Frame was detached`. Reresolva por URL a cada etapa.
+- **O devserver roda com `allowInvalidJs: false`, produção com `true`.** São `defaultConfigDev` e
+  `defaultConfig` em `packages/core/src/index.ts`, e para JS que não parseia elas fazem coisas
+  opostas — uma levanta o erro do rewriter, a outra devolve a fonte e deixa o navegador dar o
+  SyntaxError. Não dá para virar a flag de fora: o `scramjet-flags` do demo não alcança o client
+  dentro do frame proxiado, que recebe a config pelo service worker. Para medir a metade de
+  produção, mude `defaultConfigDev` e reinicie.
 - **Rode em background, com prazo de morte.** Todo script aqui dirige navegador e fala com a rede;
   em primeiro plano, um que pendure trava a sessão de quem está depurando. `comum.mjs` exporta
   `prazoDeMorte()`.
