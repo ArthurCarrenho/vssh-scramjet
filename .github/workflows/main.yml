@@ -315,17 +315,23 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      # vssh fork: era `dev-drprasad/delete-tag-and-release@v1.1`, que roda em Node 20 (deprecado) e
-      # não tem versão mais nova publicada — o runner já força Node 24 e avisa a cada build. O que a
-      # action fazia aqui cabe numa linha de `gh`, então sai junto uma dependência de terceiro do
-      # caminho que publica os artefatos que os consumidores baixam.
+      # vssh fork: **este passo apagava a release `latest` a cada build**, e era o defeito mais caro
+      # do pipeline inteiro. Era um `gh release delete latest --yes --cleanup-tag` (que por sua vez
+      # substituíra a action `dev-drprasad/delete-tag-and-release@v1.1`, em Node 20 deprecado).
       #
-      # `|| true` porque não ter o que apagar (primeira execução, ou release removida à mão) não é
-      # erro; `--cleanup-tag` reproduz o `delete_release: true` mais a remoção da tag.
-      - name: Delete old release and tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+      # O problema não é a ferramenta, é a ideia. Os consumidores instalam por URL de tarball
+      # apontando para essa release. Apagar e recriar significa que:
+      #
+      #   - o `integrity` gravado no lockfile de quem consome deixa de bater quando o mesmo nome de
+      #     arquivo volta com bytes diferentes — e o `npm ci` do servidor morre com EINTEGRITY;
+      #   - qualquer push aqui destrói os tarballs que produção está usando naquele instante;
+      #   - e, por tabela, subir um conserto pronto virava uma decisão de risco em vez de um push.
+      #
+      # Agora `latest` é ATUALIZADA (`allowUpdates` abaixo), nunca destruída, e cada build ganha uma
+      # release própria com tag que não se move — que é de onde os consumidores devem instalar.
+      - name: SHA curto para a tag do build
+        id: sha
+        run: echo "curto=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Get artifacts
         uses: actions/download-artifact@v7
@@ -345,21 +351,41 @@ jobs:
           name: scramjet-utils-package
           path: .
 
-      - name: Release unstable build to GitHub
+      # vssh fork: **a release `latest` está CONGELADA de propósito, e por isso não há passo que a
+      # escreva.** Ela continua existindo e continua servindo os tarballs que estão em produção
+      # hoje; ela só não recebe mais nada.
+      #
+      # Congelar em vez de atualizar, porque atualizar seria trocar bytes debaixo de um nome de
+      # arquivo que já está gravado no `package-lock.json` de quem consome. `alpha.13` do `latest`
+      # tem que continuar sendo, para sempre, os mesmos bytes que produção instalou — senão o
+      # `npm ci` do servidor morre com EINTEGRITY, que é exatamente o incidente que motivou o cron
+      # semanal do smoke do app.
+      #
+      # (O que estava aqui era um `ncipollo/release-action` com `tag: latest`, precedido de um
+      # `gh release delete latest --cleanup-tag`. Apagar e recriar tinha o mesmo efeito, só que
+      # mais violento: destruía os tarballs em uso a cada push.)
+      #
+      # Apagar a `latest` é outra decisão, e vem depois — servidores rodando a versão antiga do app
+      # ainda apontam para essas URLs, e toda reinstalação lá reinstala a partir delas.
+
+      # vssh fork: a release IMUTÁVEL deste build, e é dela que o app deve instalar.
+      #
+      # As outras duas (`latest` e `v<versão>`) são reescritas: `latest` a cada push, e a com versão
+      # sempre que a versão não mudou — que no fork é quase sempre, porque o `version-check` compara
+      # com um npm que nunca alimentamos. Nenhuma das duas serve para gravar num lockfile.
+      #
+      # A tag carrega o run e o SHA: o run dá ordem legível, o SHA diz exatamente de que código
+      # aquele tarball saiu. Nada nesta tag se move depois de criada.
+      - name: Release imutável deste build
         uses: ncipollo/release-action@v1
         with:
-          name: Continuous Build
-          tag: latest
-          commit: main
+          name: "engine ${{ steps.sha.outputs.curto }}"
+          tag: "engine-${{ github.run_number }}-${{ steps.sha.outputs.curto }}"
+          commit: ${{ github.sha }}
           body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
-          # vssh fork: UM glob só. `mercuryworkshop-scramjet-*.tgz` já casa com o controller e com o
-          # utils — o `,mercuryworkshop-scramjet-controller-*.tgz` que estava aqui mandava o mesmo
-          # arquivo duas vezes, e a segunda voltava
-          # `Validation Failed: {"resource":"ReleaseAsset","code":"already_exists"}` como warning em
-          # todo build. Barulho que esconde problema de verdade: é justamente neste passo que um
-          # upload realmente falho apareceria, e ele some no meio do aviso que aparece sempre.
           artifacts: "mercuryworkshop-scramjet-*.tgz"
           prerelease: true
+          makeLatest: false
 
       # vssh fork: allowUpdates nos releases com tag. O version-check compara a versão do pacote com
       # a do NPM PÚBLICO — e o fork nunca publica lá (ver o job de publish removido acima). Então,
