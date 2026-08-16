@@ -53,16 +53,34 @@ export default function (client: ScramjetClient, self: Self) {
 					// A origem é extraída por regex, e NÃO com `new URL(...)`, de propósito:
 					// dentro do cliente o construtor `URL` pode estar proxiado, e aí `.origin`
 					// volta a origem do PROXY em vez da lógica — a conferência passaria a
-					// comparar duas coisas diferentes e descartaria tudo. Custou uma rodada de
-					// bancada descobrir isso.
+					// comparar duas coisas diferentes e descartaria tudo.
 					//
-					// `esquema://host[:porta]` é exatamente o componente de origem para as URLs
-					// que podem aparecer aqui. O que não casar (origem opaca, `"null"`) segue
-					// para a comparação literal, que é o comportamento certo nesses casos.
+					// Duas normalizações, e as DUAS já custaram um site em produção:
+					//
+					//   caminho    `https://a.com/` -> `https://a.com`     (YouTube)
+					//   porta      `https://a.com:443` -> `https://a.com`  (reCAPTCHA)
+					//
+					// Porta padrão não faz parte da origem: o navegador trata `https://a.com:443` e
+					// `https://a.com` como a MESMA, e `URL.origin` nunca emite a porta padrão. O
+					// reCAPTCHA endereça com a porta explícita, então a comparação literal
+					// descartava o pedido de desafio — a caixinha girava para sempre e a tela de
+					// selecionar imagens nunca abria.
+					//
+					// O que não casar a regex (origem opaca, `"null"`) segue para a comparação
+					// literal, que é o comportamento certo nesses casos.
 					const alvo = this.data.$scramjet$targetOrigin;
 					if (typeof alvo === "string") {
-						const casa = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i.exec(alvo);
-						const alvoOrigem = casa ? casa[0] : alvo;
+						const casa = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)/i.exec(alvo);
+						let alvoOrigem = alvo;
+						if (casa) {
+							const esquema = casa[1].toLowerCase();
+							let hospedeiro = casa[2].toLowerCase();
+							const portaPadrao =
+								esquema === "https" ? ":443" : esquema === "http" ? ":80" : null;
+							if (portaPadrao && hospedeiro.endsWith(portaPadrao))
+								hospedeiro = hospedeiro.slice(0, -portaPadrao.length);
+							alvoOrigem = esquema + "://" + hospedeiro;
+						}
 						if (alvoOrigem !== client.url.origin) {
 							return false;
 						}
