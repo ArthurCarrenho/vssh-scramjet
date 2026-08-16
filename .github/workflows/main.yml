@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check the version (scramjet/core)
         id: check-scramjet
@@ -157,13 +157,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: "pnpm"
@@ -199,49 +199,49 @@ jobs:
         working-directory: packages/create-proxy-app
 
       - name: Upload Artifact (scramjet/core)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet
           path: packages/core/dist/*
 
       - name: Upload Artifact (scramjet/core) (packaged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet-package
           path: packages/core/mercuryworkshop-scramjet-*.tgz
 
       - name: Upload Artifact (scramjet/controller)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet-controller
           path: packages/controller/dist/*
 
       - name: Upload Artifact (scramjet/controller) (packaged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet-controller-package
           path: packages/controller/mercuryworkshop-scramjet-controller-*.tgz
 
       - name: Upload Artifact (scramjet/utils)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet-utils
           path: packages/utils/dist/*
 
       - name: Upload Artifact (scramjet/utils) (packaged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: scramjet-utils-package
           path: packages/utils/mercuryworkshop-scramjet-utils-*.tgz
 
       - name: Upload Artifact (proxy-bootstrap) (packaged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: proxy-bootstrap-package
           path: packages/bootstrap/mercuryworkshop-proxy-bootstrap-*.tgz
 
       - name: Upload Artifact (create-proxy-app) (packaged)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: create-proxy-app-package
           path: packages/create-proxy-app/create-proxy-app-*.tgz
@@ -253,13 +253,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: "pnpm"
@@ -268,7 +268,7 @@ jobs:
         run: pnpm install
 
       - name: Get artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-package
           path: packages/core
@@ -292,7 +292,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
@@ -315,27 +315,32 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
+      # vssh fork: era `dev-drprasad/delete-tag-and-release@v1.1`, que roda em Node 20 (deprecado) e
+      # não tem versão mais nova publicada — o runner já força Node 24 e avisa a cada build. O que a
+      # action fazia aqui cabe numa linha de `gh`, então sai junto uma dependência de terceiro do
+      # caminho que publica os artefatos que os consumidores baixam.
+      #
+      # `|| true` porque não ter o que apagar (primeira execução, ou release removida à mão) não é
+      # erro; `--cleanup-tag` reproduz o `delete_release: true` mais a remoção da tag.
       - name: Delete old release and tag
-        uses: dev-drprasad/delete-tag-and-release@v1.1
-        with:
-          delete_release: true
-          tag_name: latest
-          github_token: ${{ github.token }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
 
       - name: Get artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-package
           path: .
 
       - name: Get artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-controller-package
           path: .
 
       - name: Get artifacts (scramjet/utils)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-utils-package
           path: .
@@ -347,7 +352,13 @@ jobs:
           tag: latest
           commit: main
           body: "${{ github.event.head_commit.url }} ${{ github.event.head_commit.message }}"
-          artifacts: "mercuryworkshop-scramjet-*.tgz,mercuryworkshop-scramjet-controller-*.tgz"
+          # vssh fork: UM glob só. `mercuryworkshop-scramjet-*.tgz` já casa com o controller e com o
+          # utils — o `,mercuryworkshop-scramjet-controller-*.tgz` que estava aqui mandava o mesmo
+          # arquivo duas vezes, e a segunda voltava
+          # `Validation Failed: {"resource":"ReleaseAsset","code":"already_exists"}` como warning em
+          # todo build. Barulho que esconde problema de verdade: é justamente neste passo que um
+          # upload realmente falho apareceria, e ele some no meio do aviso que aparece sempre.
+          artifacts: "mercuryworkshop-scramjet-*.tgz"
           prerelease: true
 
       # vssh fork: allowUpdates nos releases com tag. O version-check compara a versão do pacote com
@@ -394,15 +405,15 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: "pnpm"
@@ -411,19 +422,19 @@ jobs:
         run: pnpm install
 
       - name: Get artifacts (scramjet/core)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet
           path: packages/core/dist
 
       - name: Get artifacts (scramjet/controller)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-controller
           path: packages/controller/dist
 
       - name: Get artifacts (scramjet/utils)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: scramjet-utils
           path: packages/utils/dist
@@ -433,7 +444,7 @@ jobs:
         working-directory: packages/demo
 
       - name: Upload Artifact (frontend)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: frontend
           path: ./packages/demo/dist

@@ -24,7 +24,7 @@ runs:
         shared-key: "rewriter"
 
     - name: Cache cargo bin tools
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/bin
         key: cargo-bin-${{ runner.os }}-wbg${{ inputs.wasm-bindgen-version }}-wasm-snip
@@ -38,6 +38,14 @@ runs:
           cargo install wasm-bindgen-cli --version ${{ inputs.wasm-bindgen-version }}
         fi
 
+    # vssh fork: esta é a única action que sobrou em Node 16 (as demais foram para majors que rodam
+    # em Node 24). Não há versão mais nova publicada — v1.0.0 é a última tag do repositório — então
+    # o aviso de deprecação daqui não sai por bump.
+    #
+    # Substituí-la é fácil (baixar o tarball do binaryen e pôr no PATH), mas exige FIXAR uma versão,
+    # e hoje a action resolve a mais recente. Fixar troca o wasm-opt que otimiza o WASM do rewriter,
+    # ou seja, muda o binário publicado — isso é decisão própria, com build para conferir, e não
+    # carona numa limpeza de avisos.
     - name: Setup Binaryen
       uses: Aandreba/setup-binaryen@v1.0.0
       with:
