@@ -27,15 +27,45 @@ export default function (client: ScramjetClient, self: Self) {
 				// Sem isto, um `postMessage(token, "https://conhecido")` era entregue a
 				// qualquer janela endereçada: a restrição que o site escreveu justamente
 				// para o token não vazar deixava de existir depois da reescrita.
+				//
+				// ⚠ O que o remetente passa NÃO é uma origem, é uma URL. O `postMessage`
+				// nativo aceita qualquer URL absoluta como `targetOrigin` e compara só o
+				// COMPONENTE de origem dela — então `"https://a.com/"`, `"https://a.com/x?y"`
+				// e `"https://a.com"` são todos o mesmo alvo para o navegador.
+				//
+				// Comparar texto cru descarta mensagem legítima, e descarta calado. O
+				// YouTube caiu exatamente aqui: o botão de fechar o painel de replay do chat
+				// manda `postMessage({"yt-hide-live-chat":"*"}, "https://www.youtube.com/")`
+				// — com barra final, porque é uma URL. `URL.origin` nunca tem barra, a
+				// comparação de string dava diferente, e o painel não fechava. Nada aparecia
+				// no console: do lado do site, o clique simplesmente não fazia nada.
+				//
+				// Normalizar pela URL devolve a semântica do navegador. Quando não dá para
+				// interpretar (origem opaca, `"null"`), sobra a comparação literal — que para
+				// esses casos é o comportamento certo.
 				if (
 					iswindow &&
 					this.data &&
 					typeof this.data === "object" &&
 					"$scramjet$targetOrigin" in this.data
 				) {
+					//
+					// A origem é extraída por regex, e NÃO com `new URL(...)`, de propósito:
+					// dentro do cliente o construtor `URL` pode estar proxiado, e aí `.origin`
+					// volta a origem do PROXY em vez da lógica — a conferência passaria a
+					// comparar duas coisas diferentes e descartaria tudo. Custou uma rodada de
+					// bancada descobrir isso.
+					//
+					// `esquema://host[:porta]` é exatamente o componente de origem para as URLs
+					// que podem aparecer aqui. O que não casar (origem opaca, `"null"`) segue
+					// para a comparação literal, que é o comportamento certo nesses casos.
 					const alvo = this.data.$scramjet$targetOrigin;
-					if (typeof alvo === "string" && alvo !== client.url.origin) {
-						return false;
+					if (typeof alvo === "string") {
+						const casa = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i.exec(alvo);
+						const alvoOrigem = casa ? casa[0] : alvo;
+						if (alvoOrigem !== client.url.origin) {
+							return false;
+						}
 					}
 				}
 
