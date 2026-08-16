@@ -150,6 +150,45 @@ export default [
 		`,
 	}),
 	basicTest({
+		// The shape that broke YouTube's chat replay panel: a frame injected after load talks to
+		// the page containing it through parent.postMessage. `parent` and `top` used to be resolved
+		// once, when the child's client was constructed - and a late frame can get there before its
+		// parent has registered a client. The check `SCRAMJETCLIENT in self.parent` then said no,
+		// the cached answer became "pretend we aren't nested" (i.e. `self`), and the child spent the
+		// rest of its life believing it was the top frame. parent.postMessage() delivered to itself.
+		//
+		// Both halves are asserted, because either one failing is the bug: what the child *sees*,
+		// and whether the message actually *arrives*.
+		name: "frames-parent-is-not-self",
+		js: `
+			const chegaram = [];
+			window.addEventListener("message", (e) => {
+				if (e.data && typeof e.data === "object" && "souOTopo" in e.data) chegaram.push(e.data);
+			});
+
+			const f = document.createElement("iframe");
+			// Inline script, so it runs during parse - the earliest a child client can possibly
+			// initialize, which is what makes the race reachable at all.
+			//
+			// The tag name is assembled from pieces on purpose: this test body is injected into a
+			// <script> of the harness page, and that page goes through scramjet's HTML rewriter,
+			// which re-serializes it. A literal </script> in here - even backslash-escaped - can
+			// come back out of the serializer unescaped and close the harness's own script tag,
+			// which kills the test before it starts. It failed exactly that way (timeout under
+			// scramjet, pass under bare) until the tokens stopped appearing literally.
+			const TAG = "scr" + "ipt";
+			f.srcdoc = '<!DOCTYPE html><html><body><' + TAG + '>' +
+				'parent.postMessage({ souOTopo: parent === window }, "*");' +
+				'</' + TAG + '></body></html>';
+			document.body.appendChild(f);
+			await new Promise((r) => { f.onload = r; setTimeout(r, 4000); });
+			await new Promise((r) => setTimeout(r, 300));
+
+			assertEqual(chegaram.length, 1, "the child's message must reach the parent (got " + chegaram.length + ")");
+			assertEqual(chegaram[0].souOTopo, false, "a nested frame must not resolve parent to itself");
+		`,
+	}),
+	basicTest({
 		name: "frames-sandbox-attribute",
 		js: `
 			const f = document.createElement("iframe");

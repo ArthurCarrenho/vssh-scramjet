@@ -1,6 +1,6 @@
 import { glob, mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { chromium } from "playwright";
 import type { Page, Browser, BrowserContext } from "playwright";
@@ -184,7 +184,10 @@ async function discoverTests(): Promise<Test[]> {
 			continue;
 		}
 		const fullPath = path.join(__dirname, "tests", file);
-		const module = await import(fullPath);
+		// pathToFileURL, not the bare path: on Windows an absolute path starts with a drive letter,
+		// and the ESM loader reads `c:` as a URL scheme it doesn't support. The whole runner died
+		// before the first test with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+		const module = await import(pathToFileURL(fullPath).href);
 		if (module.default) {
 			// Handle both single test and array of tests
 			if (Array.isArray(module.default)) {

@@ -25,6 +25,27 @@ export default [
 		autoPass: false,
 	}),
 	basicTest({
+		// `x["postMessage"]` has to behave exactly like `x.postMessage`. The rewriter wraps the
+		// *object* on the static form so the envelope can carry the real origin; the computed form
+		// used to skip that entirely, which meant a page could spell the property as a string and
+		// silently get a different origin than the one every other caller sees. Anti-bot and captcha
+		// code reaches for computed access routinely, so the gap pointed at its most likely caller.
+		//
+		// The assertion is on `origin`, not on delivery: an unwrapped call still *arrives*, it just
+		// arrives claiming the proxy's own origin. Asserting only that the message showed up would
+		// pass with the bug present.
+		name: "postmessage-computed-property-origin",
+		js: `
+            addEventListener("message", (event) => {
+                assertEqual(event.data, "computed", "message should be correct");
+                assertEqual(event.origin, location.origin, "computed access must report the proxied origin");
+                pass();
+            });
+            window["postMessage"]("computed", "*");
+        `,
+		autoPass: false,
+	}),
+	basicTest({
 		name: "postmessage-event-meta-sanity",
 		js: `
             addEventListener("message", (event) => {

@@ -76,6 +76,23 @@ where
 	}
 
 	fn handle_computed_member_expression(&mut self, it: &ComputedMemberExpression<'data>) {
+		// `x["postMessage"](...)` is the same call as `x.postMessage(...)`, and the static branch in
+		// visit_member_expression wraps the object so the envelope can carry the real origin. Spelling
+		// the property as a string used to skip that wrap entirely — the TODO over there says as much
+		// ("you could break this with [\"postMessage\"] etc"), and notes the code exists because of
+		// recaptcha. Anti-bot code is exactly the kind that reaches for computed access, so the hole
+		// was pointed at the one caller it most needed to cover.
+		//
+		// This sits ABOVE the disable_computed_wrap gate on purpose. That flag turns off the blanket
+		// property wrapping for speed; it is not a request to break cross-frame messaging. The cost
+		// here is one string compare on computed access whose property is a literal.
+		if let Expression::StringLiteral(lit) = &it.expression {
+			if lit.value == "postMessage" && !matches!(&it.object, Expression::Super(_)) {
+				self.jschanges
+					.add(rewrite!(it.object.span(), WrapPostMessage));
+			}
+		}
+
 		if self.flags.disable_computed_wrap { return };
 		match &it.expression {
 			Expression::NullLiteral(_)

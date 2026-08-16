@@ -5,30 +5,76 @@ import { ScramjetClient } from "@client/index";
 import { Object_defineProperty } from "@/shared/snapshot";
 
 export function createWrapFn(client: ScramjetClient, self: GlobalThis) {
-	let wrappedParent: GlobalThis | null = null;
-	let wrappedTop: GlobalThis | null = null;
-	if (iswindow) {
+	// `parent` e `top` são resolvidos SOB DEMANDA, não uma vez na construção do client — e a
+	// diferença aparece na tela.
+	//
+	// Os dois dependem de os frames ancestrais já terem um client instalado, e isso é uma corrida:
+	// um iframe que o site injeta depois do carregamento pode inicializar o próprio client ANTES de
+	// o pai ter registrado o dele. Resolvendo tudo na construção, `SCRAMJETCLIENT in self.parent`
+	// dava falso e o valor cacheado virava `self` — o frame passava a acreditar que ERA o topo.
+	//
+	// A consequência não é sutil. `parent.postMessage(...)` é como um iframe fala com a página que o
+	// contém; virando `self.postMessage(...)`, a mensagem volta para quem a mandou e nunca chega ao
+	// destino. Foi assim que isto foi encontrado: no YouTube, o painel de replay do chat é um iframe
+	// injetado tarde, e o botão de ocultar simplesmente não respondia. Como o valor era cacheado,
+	// não havia segunda chance — uma vez errado, errado por toda a vida do frame.
+	//
+	// O cache continua existindo, só que com uma condição de parada honesta: guardamos a resposta
+	// quando ela não pode mais mudar, e reconferimos justamente o caso que a corrida produz.
+	let parentCache: GlobalThis | null = null;
+	let parentSettled = false;
+	let topCache: GlobalThis | null = null;
+	let topSettled = false;
+
+	function resolveParent(): GlobalThis {
+		if (parentSettled) return parentCache!;
 		try {
-			if (SCRAMJETCLIENT in self.parent) {
-				// ... then we're in a subframe, and the parent frame is also in a proxy context, so we should return its proxy
-				wrappedParent = self.parent;
-			} else {
-				// ... then we should pretend we aren't nested and return the current window
-				wrappedParent = self;
+			// `Window` and `typeof globalThis` don't overlap structurally, but a proxied frame's
+			// parent is a full global. one cast up front keeps the checks below readable.
+			const parent = self.parent as unknown as GlobalThis;
+			if (parent === self) {
+				// genuinely the top frame — this never changes
+				parentSettled = true;
+				return (parentCache = self);
 			}
+			if (SCRAMJETCLIENT in parent) {
+				// ... then we're in a subframe, and the parent frame is also in a proxy context, so we should return its proxy
+				parentSettled = true;
+				return (parentCache = parent);
+			}
+			// there IS a parent and it's reachable, it just hasn't been hooked yet. that can change
+			// on the very next tick, so don't settle: pretend we aren't nested for now and look again.
+			parentCache = self;
 		} catch {
-			// accessing self.parent can throw if it's cross-origin, in which case we should also pretend we aren't nested
-			wrappedParent = self;
+			// accessing self.parent can throw if it's cross-origin, in which case we should also
+			// pretend we aren't nested — and cross-origin never becomes same-origin, so settle.
+			parentSettled = true;
+			parentCache = self;
 		}
+		return parentCache;
+	}
+
+	function resolveTop(): GlobalThis {
+		if (topSettled) return topCache!;
 		// instead of returning top, we need to return the uppermost parent that's inside a scramjet context
 		let current = self;
+		let settled = true;
 		for (;;) {
-			const test = current.parent.self;
+			let test: GlobalThis;
+			try {
+				test = current.parent.self;
+			} catch {
+				break; // cross-origin: this is as far as we can ever see
+			}
 			if (test === current) break; // there is no parent, actual or emulated.
 
 			try {
-				// ... then `test` represents a window outside of the proxy context, and therefore `current` is the topmost window in the proxy context
-				if (!(SCRAMJETCLIENT in test)) break;
+				if (!(SCRAMJETCLIENT in test)) {
+					// `current` is the topmost window in the proxy context *for now* — `test` may still
+					// get hooked later, so this answer isn't final.
+					settled = false;
+					break;
+				}
 			} catch {
 				// accessing test can throw if it's cross-origin, in which case we should also break
 				break;
@@ -36,7 +82,9 @@ export function createWrapFn(client: ScramjetClient, self: GlobalThis) {
 			// test is also insde a proxy, so we should continue up the chain
 			current = test;
 		}
-		wrappedTop = current;
+		topSettled = settled;
+
+		return (topCache = current);
 	}
 
 	return function (identifier: any) {
@@ -46,9 +94,9 @@ export function createWrapFn(client: ScramjetClient, self: GlobalThis) {
 		}
 		if (iswindow) {
 			if (identifier === self.parent) {
-				return wrappedParent;
+				return resolveParent();
 			} else if (identifier === self.top) {
-				return wrappedTop;
+				return resolveTop();
 			}
 		}
 		return identifier;
