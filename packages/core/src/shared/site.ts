@@ -58,7 +58,14 @@ export function siteRegistravel(hostname: string): string {
 	// mesmo `if` devolvia `folha.com.br` para `www.folha.com.br` — certo por acidente. Com o
 	// sufixo conhecido, os dois caem na regra geral e dão a mesma resposta, sem exceção.
 	const doisUltimos = labels.slice(-2).join(".");
-	if (SUFIXOS_MULTI.has(doisUltimos) && labels.length >= 3) {
+	// A heurística entra junto com a lista, e pelo mesmo motivo: são as duas metades da MESMA
+	// pergunta. Sem ela, `loja.co.ke` e `banco.co.ke` respondiam ambos `co.ke` — dois sites sem
+	// relação nenhuma tratados como o mesmo, que é exatamente o defeito que a lista veio corrigir
+	// para o Brasil e deixou aberto para o resto do mundo.
+	if (
+		(SUFIXOS_MULTI.has(doisUltimos) || pareceSufixoPublico(doisUltimos)) &&
+		labels.length >= 3
+	) {
 		return labels.slice(-3).join(".");
 	}
 
@@ -87,5 +94,39 @@ export function dominioCasa(hostname: string, domain: string): boolean {
 	// inteiro. É o mesmo teste do `siteRegistravel`, visto do outro lado.
 	if (SUFIXOS_MULTI.has(dom)) return false;
 	if (!dom.includes(".")) return false; // TLD puro: `Domain=com`
+	if (pareceSufixoPublico(dom)) return false;
 	return true;
+}
+
+// Segundos níveis genéricos: os rótulos que registros nacionais usam para dividir o país em
+// categorias, em vez de vender direto no segundo nível.
+const SEGUNDO_NIVEL_GENERICO = new Set([
+	"com", "net", "org", "edu", "gov", "mil", "int",
+	"ac", "co", "or", "ne", "go", "in", "id", "sch", "gob", "nom", "web", "biz", "info",
+]);
+
+/**
+ * `dom` PARECE um sufixo público que não está na lista fixa?
+ *
+ * ⚠ Isto existe porque a lista cobre ~60 sufixos e o mundo tem milhares. **Medido**: `co.ke` e
+ * `com.gh` passavam pela conferência de `Domain=` — um site sob um sufixo não listado podia escrever
+ * cookie para o país inteiro, e LER o que os vizinhos escreveram, já que o jar é um só para todas as
+ * origens proxiadas. A lista acertava o Brasil e deixava o Quênia aberto, sem que nada no código
+ * dissesse isso.
+ *
+ * A regra: DOIS rótulos, o último com exatamente duas letras (ccTLD) e o primeiro sendo um segundo
+ * nível genérico. Cobre `co.ke`, `com.gh`, `org.mz`, `ne.tz` — a forma que os registros nacionais
+ * usam — sem tocar em domínio registrável de verdade: `google.de` tem `google` no primeiro rótulo,
+ * `go.com` termina em três letras.
+ *
+ * O preço, dito na cara: um domínio registrável que POR ACASO tenha essa forma (registrar `co.tv`,
+ * num TLD que vende no segundo nível) é recusado indevidamente. É a troca deliberada — errar
+ * fechando um caso raro em vez de errar abrindo duzentos países. Quem topar com um assim acrescenta
+ * a exceção aqui, e o teste ao lado nomeia o caso.
+ */
+function pareceSufixoPublico(dom: string): boolean {
+	const rotulos = dom.split(".");
+	if (rotulos.length !== 2) return false;
+	const [primeiro, ultimo] = rotulos;
+	return ultimo.length === 2 && SEGUNDO_NIVEL_GENERICO.has(primeiro);
 }
